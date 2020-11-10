@@ -92,6 +92,10 @@ console_error_panic_hook = "0.1.6"
 console_log = {version = "0.2", features = ["color"]}
 
 [[example]]
+name = "snake"
+path = "examples/snake/snake.rs"
+
+[[example]]
 name = "hello_world"
 path = "examples/hello_world.rs"
 
