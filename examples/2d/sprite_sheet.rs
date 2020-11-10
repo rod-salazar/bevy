@@ -18,6 +18,9 @@ fn animate_sprite_system(
         if timer.finished() {
             let texture_atlas = texture_atlases.get(texture_atlas_handle).unwrap();
             sprite.index = ((sprite.index as usize + 1) % texture_atlas.textures.len()) as u32;
+            println!("Timer finished");
+        } else {
+            // println!("Timer not finished");
         }
     }
 }

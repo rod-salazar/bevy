@@ -79,6 +79,14 @@ ron = "0.6.2"
 serde = {version = "1", features = ["derive"]}
 
 [[example]]
+name = "snake"
+path = "examples/snake/snake.rs"
+
+[[example]]
+name = "flappy"
+path = "examples/flappy/flappy.rs"
+
+[[example]]
 name = "hello_world"
 path = "examples/hello_world.rs"
 
