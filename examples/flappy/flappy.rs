@@ -83,9 +83,9 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup_fps_text.system())
+        .add_system(fps_text_update_system.system())
         .add_startup_system(setup_grid.system())
         .add_system(update_grid.system())
-        .add_system(fps_text_update_system.system())
         .run();
 }
 

@@ -87,6 +87,11 @@ name = "flappy"
 path = "examples/flappy/flappy.rs"
 
 [[example]]
+name = "flappy2"
+path = "examples/flappy2/flappy2.rs"
+
+
+[[example]]
 name = "hello_world"
 path = "examples/hello_world.rs"
 
