@@ -4,7 +4,7 @@ use crate::{
     texture::{Texture, TextureDescriptor, TEXTURE_ASSET_INDEX},
 };
 use bevy_app::prelude::{EventReader, Events};
-use bevy_asset::{AssetEvent, Assets, HandleId};
+use bevy_asset::{AssetEvent, Assets};
 use bevy_ecs::{Resources, World};
 use bevy_utils::{AHashExt, HashSet};
 
@@ -24,14 +24,16 @@ impl Node for TextureCopyNode {
     ) {
         let texture_events = resources.get::<Events<AssetEvent<Texture>>>().unwrap();
         let textures = resources.get::<Assets<Texture>>().unwrap();
-        //  println!("Iterating texture events");
+        println!("Iterating texture events");
         let mut synced_textures = HashSet::new();
+        let mut cnt = 0;
         for event in self.texture_event_reader.iter(&texture_events) {
             match event {
                 AssetEvent::Created { handle } | AssetEvent::Modified { handle } => {
                     if let Some(texture) = textures.get(handle) {
+                        cnt += 1;
                         if synced_textures.contains(&handle.id) {
-                            return;
+                            // continue;
                         }
                         //  println!("TextureCopyNode");
                         let texture_descriptor: TextureDescriptor = texture.into();
@@ -91,5 +93,6 @@ impl Node for TextureCopyNode {
                 AssetEvent::Removed { .. } => {}
             }
         }
+        println!("Done with texture copies: {}", cnt);
     }
 }

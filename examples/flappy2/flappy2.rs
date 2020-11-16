@@ -1,11 +1,9 @@
 use bevy::{
-    core::Bytes,
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::texture::{TextureFormat, TextureFormat::Rgba8UnormSrgb},
     utils::{AHashExt, HashSet},
 };
-use bevy_internal::render::color::ColorSource;
 use rand::Rng;
 
 /**
@@ -178,16 +176,18 @@ fn main() {
     App::build()
         .add_resource(WindowDescriptor {
             vsync: false,
+            // width: 200,
+            // height: 200,
             ..Default::default()
         })
         .add_resource(Center(0.0f32, 0.0f32))
         .add_plugins(DefaultPlugins)
-        .add_plugin(FrameTimeDiagnosticsPlugin::default())
+        //     .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup_game.system())
-        .add_startup_system(setup_fps_text.system())
+        //  .add_startup_system(setup_fps_text.system())
         .add_system(chunk_management.system())
         .add_system(update_chunk_textures.system())
-        .add_system(fps_text_update_system.system())
+        //.add_system(fps_text_update_system.system())
         .run();
 }
 
@@ -223,14 +223,56 @@ fn setup_game(
         });
 }
 
-fn update_chunk_textures(
+fn update_chunk_textures_dummy(
+    // commands: &mut Commands,
     mut mut_textures: ResMut<Assets<Texture>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    materials: ResMut<Assets<ColorMaterial>>,
+    q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
+) {
+    println!("Starting system loop");
+
+    for (material, chunk) in q.iter() {
+        let chunk_material = materials.get(material).unwrap();
+
+        let chunk_texture = mut_textures
+            .get_mut(chunk_material.texture.as_ref().unwrap())
+            .unwrap();
+
+        if chunk_texture.data.len()
+            != (CHUNK_SIZE * CHUNK_SIZE * TILE_SIZE * TILE_SIZE * 4) as usize
+        {
+            println!(
+                "Found {} expected {}",
+                chunk_texture.data.len(),
+                (CHUNK_SIZE * TILE_SIZE * 4)
+            );
+            panic!("Misunderstood chunk texture size");
+        }
+
+        let mut x = 0;
+        let myref = chunk_material.texture.as_ref().unwrap();
+        for i in 0..CHUNK_SIZE * CHUNK_SIZE {
+            let chunk_texture = mut_textures.get_mut(myref).unwrap();
+            for j in 0..TILE_SIZE * TILE_SIZE {
+                for z in 0..4 {
+                    chunk_texture.data[x] = 255u8;
+                    x += 1;
+                }
+            }
+        }
+    }
+    println!("Ending system loop");
+}
+
+fn update_chunk_textures(
+    // commands: &mut Commands,
+    mut mut_textures: ResMut<Assets<Texture>>,
+    materials: ResMut<Assets<ColorMaterial>>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
 ) {
     for (material, chunk) in q.iter() {
         // No clone
-        let mut chunk_material = materials.get(material).unwrap();
+        let chunk_material = materials.get(material).unwrap();
         let chunk_pixel_format_size = {
             let chunk_texture = mut_textures
                 .get_mut(chunk_material.texture.as_ref().unwrap())
@@ -262,45 +304,69 @@ fn update_chunk_textures(
                 tile_texture.clone()
             };
 
-            let x = chunk_material.texture.as_ref().unwrap();
             // // What's this .clone for, or as_ref?
-            // Causes OOM
-            let chunk_texture = mut_textures.get_mut(x);
+            let chunk_texture = mut_textures
+                .get_mut(chunk_material.texture.as_ref().unwrap())
+                .unwrap();
+
+            let tile_row_size = TILE_SIZE * chunk_pixel_format_size;
 
             for row_i in 0..TILE_SIZE {
                 // For each row in the tile
-                // let chunk_position_row_begin =
-                //     (chunk_tex_tile_top_left + bytes_per_row * row_i) as usize;
-                // let chunk_position_row_end =
-                //     (chunk_position_row_begin + bytes_per_tile as usize) as usize; // end exclusive.
-                //
-                // let tile_row_size = TILE_SIZE * chunk_pixel_format_size;
-                // let tile_pos_start = (tile_row_size * row_i) as usize;
-                // let tile_pos_end = tile_pos_start + tile_row_size as usize;
-                //
-                // // move to debug assert
-                // if chunk_position_row_end - chunk_position_row_begin
-                //     != tile_pos_end - tile_pos_start
-                // {
-                //     panic!(
-                //         "Slice source has different length (src/dest) {}/{}",
-                //         tile_texture.data.len(),
-                //         chunk_position_row_end - chunk_position_row_begin
-                //     );
-                // }
+                let chunk_position_row_begin =
+                    (chunk_tex_tile_top_left + bytes_per_row * row_i) as usize;
+                let chunk_position_row_end =
+                    (chunk_position_row_begin + bytes_per_tile as usize) as usize; // end exclusive.
+
+                let tile_pos_start = (tile_row_size * row_i) as usize;
+                let tile_pos_end = tile_pos_start + tile_row_size as usize;
+
+                // move to debug assert
+                if chunk_position_row_end - chunk_position_row_begin
+                    != tile_pos_end - tile_pos_start
+                {
+                    panic!(
+                        "Slice source has different length (src/dest) {}/{}",
+                        tile_texture.data.len(),
+                        chunk_position_row_end - chunk_position_row_begin
+                    );
+                }
+
+                if (chunk_position_row_end - chunk_position_row_begin)
+                    % chunk_pixel_format_size as usize
+                    != 0
+                {
+                    panic!("Invalid copy, not of pixel format length mod");
+                }
 
                 // todo: assert on color format
 
                 // does copy from slice work?
-                //chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
-                //    .clone_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
+                // println!(
+                //     "current chunk texture[{}] {}",
+                //     (chunk_tex_tile_top_left + bytes_per_row),
+                //     chunk_texture.data[(chunk_tex_tile_top_left + bytes_per_row) as usize]
+                // );
+                // println!(
+                //     "writing into chunk tex byte {} with value {}",
+                //     chunk_position_row_begin, tile_texture.data[tile_pos_start]
+                // );
+                chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
+                    .clone_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
             }
         }
+
+        // let chunk_texture = mut_textures
+        //     .get_mut(chunk_material.texture.as_ref().unwrap())
+        //     .unwrap();
+        // println!("loop done: {}", chunk_texture.data[128]);
+
+        // commands.spawn(SpriteComponents { material })
     }
 }
 
 fn create_brown_texture(pixel_width: u32, pixel_height: u32) -> Texture {
-    let color = vec![101u8, 67u8, 63u8, 255u8];
+    let color = vec![255u8, 255u8, 255u8, 255u8];
     create_color_texture(&color, pixel_width, pixel_height)
 }
 
@@ -389,7 +455,7 @@ fn chunk_management(
                             texture: if r % 2 == 1 {
                                 brown_material.clone()
                             } else {
-                                green_material.clone()
+                                brown_material.clone()
                             }, // This is the per tile texture
                             kind: FlappyTileKind::Dirt
                         };
@@ -422,7 +488,7 @@ fn setup_fps_text(commands: &mut Commands, asset_server: Res<AssetServer>) {
                 font: asset_server.load("fonts/FiraSans-Bold.ttf"),
                 style: TextStyle {
                     font_size: 60.0,
-                    color: Color::WHITE,
+                    color: Color::BLUE,
                     ..Default::default()
                 },
                 ..Default::default()

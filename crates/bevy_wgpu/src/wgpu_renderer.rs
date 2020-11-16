@@ -110,6 +110,8 @@ impl WgpuRenderer {
     }
 
     pub fn update(&mut self, world: &mut World, resources: &mut Resources) {
+        println!("update render system called");
+        //panic!("tempo panic");
         self.handle_window_created_events(resources);
         self.run_graph(world, resources);
 
