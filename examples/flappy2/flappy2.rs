@@ -2,8 +2,9 @@ use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::texture::{TextureFormat, TextureFormat::Rgba8UnormSrgb},
-    utils::{AHashExt, HashSet},
+    utils::{AHashExt, HashMap, HashSet},
 };
+use bevy_internal::asset::HandleId;
 use rand::Rng;
 
 /**
@@ -30,8 +31,8 @@ trait Tile {
     fn texture(&self) -> &Handle<ColorMaterial>;
 }
 
-const CHUNK_SIZE: u32 = 32; // How many tiles in each chunk ROW
-const TILE_SIZE: u32 = 32; // units, not necessarily pixels, but equal to pixels at default zoom
+const CHUNK_WIDTH: u32 = 16; // How many tiles in each chunk ROW
+const TILE_WIDTH: u32 = 16; // units, not necessarily pixels, but equal to pixels at default zoom
 
 trait Chunk<T: Tile> {
     fn tiles(&self) -> &Vec<T>;
@@ -80,8 +81,8 @@ fn world_rect_to_chunk_indices(rect: Rect) -> HashSet<(i32, i32)> {
 fn world_point_to_chunk_index(x: f32, y: f32) -> (i32, i32) {
     // Does this behave right for negatives?
     // No zoom handling necessary since this is a world point
-    let x = x / (CHUNK_SIZE as f32 * TILE_SIZE as f32);
-    let y = y / (CHUNK_SIZE as f32 * TILE_SIZE as f32);
+    let x = x / (CHUNK_WIDTH as f32 * TILE_WIDTH as f32);
+    let y = y / (CHUNK_WIDTH as f32 * TILE_WIDTH as f32);
 
     (x.floor() as i32, y.floor() as i32)
 }
@@ -95,7 +96,7 @@ fn screen_info_to_world_rect(width: f32, height: f32, center_x: f32, center_y: f
 }
 
 fn chunk_index_to_world_pos_center(chunk_x_index: i32, chunk_y_index: i32) -> (f32, f32) {
-    let chunk_width_units = (CHUNK_SIZE * TILE_SIZE) as f32;
+    let chunk_width_units = (CHUNK_WIDTH * TILE_WIDTH) as f32;
     let offset_to_center = chunk_width_units / 2.0f32;
     (
         chunk_width_units * chunk_x_index as f32 + offset_to_center,
@@ -182,12 +183,12 @@ fn main() {
         })
         .add_resource(Center(0.0f32, 0.0f32))
         .add_plugins(DefaultPlugins)
-        //     .add_plugin(FrameTimeDiagnosticsPlugin::default())
+        .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup_game.system())
-        //  .add_startup_system(setup_fps_text.system())
+        .add_startup_system(setup_fps_text.system())
         .add_system(chunk_management.system())
         .add_system(update_chunk_textures.system())
-        //.add_system(fps_text_update_system.system())
+        .add_system(fps_text_update_system.system())
         .run();
 }
 
@@ -214,54 +215,13 @@ fn setup_game(
         .spawn(SpriteComponents {
             material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
             transform: Transform::from_translation(Vec3::new(
-                (CHUNK_SIZE * TILE_SIZE) as f32,
+                (CHUNK_WIDTH * TILE_WIDTH) as f32,
                 0.0,
                 1.0,
             )),
             sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
             ..Default::default()
         });
-}
-
-fn update_chunk_textures_dummy(
-    // commands: &mut Commands,
-    mut mut_textures: ResMut<Assets<Texture>>,
-    materials: ResMut<Assets<ColorMaterial>>,
-    q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
-) {
-    println!("Starting system loop");
-
-    for (material, chunk) in q.iter() {
-        let chunk_material = materials.get(material).unwrap();
-
-        let chunk_texture = mut_textures
-            .get_mut(chunk_material.texture.as_ref().unwrap())
-            .unwrap();
-
-        if chunk_texture.data.len()
-            != (CHUNK_SIZE * CHUNK_SIZE * TILE_SIZE * TILE_SIZE * 4) as usize
-        {
-            println!(
-                "Found {} expected {}",
-                chunk_texture.data.len(),
-                (CHUNK_SIZE * TILE_SIZE * 4)
-            );
-            panic!("Misunderstood chunk texture size");
-        }
-
-        let mut x = 0;
-        let myref = chunk_material.texture.as_ref().unwrap();
-        for i in 0..CHUNK_SIZE * CHUNK_SIZE {
-            let chunk_texture = mut_textures.get_mut(myref).unwrap();
-            for j in 0..TILE_SIZE * TILE_SIZE {
-                for z in 0..4 {
-                    chunk_texture.data[x] = 255u8;
-                    x += 1;
-                }
-            }
-        }
-    }
-    println!("Ending system loop");
 }
 
 fn update_chunk_textures(
@@ -280,14 +240,16 @@ fn update_chunk_textures(
             chunk_texture.format.pixel_size() as u32
         };
 
+        let bytes_per_tile_row = TILE_WIDTH * chunk_pixel_format_size;
+        let bytes_per_chunk_row = CHUNK_WIDTH * bytes_per_tile_row;
+
+        let mut seen_tiles = HashMap::new();
         for (tile_i, tile) in chunk.tiles.iter().enumerate() {
             // For each Tile
             let tile_i = tile_i as u32;
-            let bytes_per_tile = TILE_SIZE * chunk_pixel_format_size;
-            let bytes_per_row = CHUNK_SIZE * TILE_SIZE * chunk_pixel_format_size;
-            let tile_row = tile_i as u32 / CHUNK_SIZE;
-            let chunk_tex_tile_top_left =
-                tile_row * bytes_per_row + (tile_i % CHUNK_SIZE) * bytes_per_tile;
+            let tile_row = tile_i as u32 / CHUNK_WIDTH;
+            let chunk_tex_tile_top_left = (tile_row * bytes_per_chunk_row * CHUNK_WIDTH)
+                + ((tile_i % CHUNK_WIDTH) * bytes_per_tile_row);
 
             let tile_material = materials.get(tile.texture.clone()).unwrap();
             let tile_texture_handle = match tile_material.texture {
@@ -297,76 +259,58 @@ fn update_chunk_textures(
                 Some(_) => tile_material.texture.as_ref().unwrap().clone(),
             };
 
-            let tile_texture = {
+            let uuid = match tile_texture_handle.id {
+                HandleId::Id(_, value) => value,
+                HandleId::AssetPathId(_) => {
+                    panic!("Did not expect asset path");
+                }
+            };
+
+            // doesn't help, all the handles have different uuids
+            let tile_texture: &Texture = seen_tiles.entry(uuid).or_insert_with(|| {
                 let tile_texture = mut_textures.get(tile_texture_handle).unwrap();
                 // Gross, copy since we can't have 2 open textures which came from the bevy
                 // assets resource. Maybe open issue. Play with unsafe.
                 tile_texture.clone()
-            };
+            });
 
             // // What's this .clone for, or as_ref?
             let chunk_texture = mut_textures
                 .get_mut(chunk_material.texture.as_ref().unwrap())
                 .unwrap();
 
-            let tile_row_size = TILE_SIZE * chunk_pixel_format_size;
-
-            for row_i in 0..TILE_SIZE {
+            for tile_inner_row_i in 0..TILE_WIDTH {
                 // For each row in the tile
                 let chunk_position_row_begin =
-                    (chunk_tex_tile_top_left + bytes_per_row * row_i) as usize;
+                    (chunk_tex_tile_top_left + (bytes_per_chunk_row * tile_inner_row_i)) as usize;
                 let chunk_position_row_end =
-                    (chunk_position_row_begin + bytes_per_tile as usize) as usize; // end exclusive.
+                    (chunk_position_row_begin + bytes_per_tile_row as usize) as usize; // end exclusive.
 
-                let tile_pos_start = (tile_row_size * row_i) as usize;
-                let tile_pos_end = tile_pos_start + tile_row_size as usize;
+                let tile_pos_start = (bytes_per_tile_row * tile_inner_row_i) as usize;
+                let tile_pos_end = tile_pos_start + bytes_per_tile_row as usize;
 
-                // move to debug assert
-                if chunk_position_row_end - chunk_position_row_begin
-                    != tile_pos_end - tile_pos_start
-                {
-                    panic!(
-                        "Slice source has different length (src/dest) {}/{}",
-                        tile_texture.data.len(),
-                        chunk_position_row_end - chunk_position_row_begin
-                    );
-                }
-
-                if (chunk_position_row_end - chunk_position_row_begin)
-                    % chunk_pixel_format_size as usize
-                    != 0
-                {
-                    panic!("Invalid copy, not of pixel format length mod");
-                }
+                debug_assert_eq!(
+                    chunk_position_row_end - chunk_position_row_begin,
+                    tile_pos_end - tile_pos_start
+                );
+                debug_assert_eq!(
+                    (chunk_position_row_end - chunk_position_row_begin)
+                        % chunk_pixel_format_size as usize,
+                    0
+                );
 
                 // todo: assert on color format
 
                 // does copy from slice work?
-                // println!(
-                //     "current chunk texture[{}] {}",
-                //     (chunk_tex_tile_top_left + bytes_per_row),
-                //     chunk_texture.data[(chunk_tex_tile_top_left + bytes_per_row) as usize]
-                // );
-                // println!(
-                //     "writing into chunk tex byte {} with value {}",
-                //     chunk_position_row_begin, tile_texture.data[tile_pos_start]
-                // );
                 chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
                     .clone_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
             }
         }
-
-        // let chunk_texture = mut_textures
-        //     .get_mut(chunk_material.texture.as_ref().unwrap())
-        //     .unwrap();
-        // println!("loop done: {}", chunk_texture.data[128]);
-
-        // commands.spawn(SpriteComponents { material })
     }
 }
 
 fn create_brown_texture(pixel_width: u32, pixel_height: u32) -> Texture {
-    let color = vec![255u8, 255u8, 255u8, 255u8];
+    let color = vec![210u8, 105u8, 30u8, 255u8];
     create_color_texture(&color, pixel_width, pixel_height)
 }
 
@@ -415,20 +359,31 @@ fn chunk_management(
         if !current_chunk_indices.contains(&next_index) {
             // Should this be placed somewhere cached, like a resource?
             let brown_texture =
-                ColorMaterial::texture(textures.add(create_brown_texture(TILE_SIZE, TILE_SIZE)));
+                ColorMaterial::texture(textures.add(create_brown_texture(TILE_WIDTH, TILE_WIDTH)));
             let brown_material = materials.add(brown_texture);
             let green_texture =
-                ColorMaterial::texture(textures.add(create_green_texture(TILE_SIZE, TILE_SIZE)));
+                ColorMaterial::texture(textures.add(create_green_texture(TILE_WIDTH, TILE_WIDTH)));
             let green_material = materials.add(green_texture);
 
-            let r: u8 = rng.gen();
+            let mut tiles = vec![];
+            for _i in 0..CHUNK_WIDTH * CHUNK_WIDTH {
+                let r: u8 = rng.gen();
+                tiles.push(FlappyTile {
+                    texture: if r % 2 == 1 {
+                        brown_material.clone()
+                    } else {
+                        green_material.clone()
+                    }, // This is the per tile texture
+                    kind: FlappyTileKind::Dirt,
+                });
+            }
             let chunk_texture_size = bevy::prelude::Vec2::new(
-                (CHUNK_SIZE * TILE_SIZE) as f32,
-                (CHUNK_SIZE * TILE_SIZE) as f32,
+                (CHUNK_WIDTH * TILE_WIDTH) as f32,
+                (CHUNK_WIDTH * TILE_WIDTH) as f32,
             );
             let texture = textures.add(Texture::new(
                 chunk_texture_size.clone(),
-                vec![0u8; ((CHUNK_SIZE * TILE_SIZE) * (CHUNK_SIZE * TILE_SIZE) * 4) as usize],
+                vec![0u8; ((CHUNK_WIDTH * TILE_WIDTH) * (CHUNK_WIDTH * TILE_WIDTH) * 4) as usize],
                 TextureFormat::Rgba8UnormSrgb,
             ));
             let chunk_texture = materials.add(ColorMaterial::texture(texture));
@@ -450,17 +405,7 @@ fn chunk_management(
                     ..Default::default()
                 })
                 .with(FlappyChunk {
-                    tiles: vec![
-                        FlappyTile {
-                            texture: if r % 2 == 1 {
-                                brown_material.clone()
-                            } else {
-                                brown_material.clone()
-                            }, // This is the per tile texture
-                            kind: FlappyTileKind::Dirt
-                        };
-                        CHUNK_SIZE as usize * CHUNK_SIZE as usize
-                    ],
+                    tiles,
                     x: next_index.0,
                     y: next_index.1,
                 });

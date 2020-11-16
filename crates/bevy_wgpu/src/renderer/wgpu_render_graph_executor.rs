@@ -22,7 +22,7 @@ impl WgpuRenderGraphExecutor {
         queue: &mut wgpu::Queue,
         stages: &mut [StageBorrow],
     ) {
-        println!("WgpuRenderGraphExecutor execute");
+        //   println!("WgpuRenderGraphExecutor execute");
         let mut render_resource_context = resources
             .get_mut::<Box<dyn RenderResourceContext>>()
             .unwrap();
