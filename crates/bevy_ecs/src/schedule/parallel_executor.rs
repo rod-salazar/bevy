@@ -500,7 +500,7 @@ impl ExecutorStage {
                 let _system_guard = system_span.enter();
 
                 system.run(world, resources);
-                println!("running thread local system {} ", system.name());
+                // println!("running thread local system {} ", system.name());
                 system.run_thread_local(world, resources);
             }
 
