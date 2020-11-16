@@ -90,6 +90,9 @@ path = "examples/flappy/flappy.rs"
 name = "flappy2"
 path = "examples/flappy2/flappy2.rs"
 
+[[example]]
+name = "oom_repro"
+path = "examples/oom_repro/oom_repro.rs"
 
 [[example]]
 name = "hello_world"
