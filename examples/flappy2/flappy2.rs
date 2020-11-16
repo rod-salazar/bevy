@@ -1,8 +1,12 @@
 use bevy::{
+    core::Bytes,
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
+    render::texture::{TextureFormat, TextureFormat::Rgba8UnormSrgb},
     utils::{AHashExt, HashSet},
 };
+use bevy_internal::render::color::ColorSource;
+use rand::Rng;
 
 /**
 The plan is to design a Chunk system. The Chunk system is for storing world tiles in a way that they
@@ -28,7 +32,7 @@ trait Tile {
     fn texture(&self) -> &Handle<ColorMaterial>;
 }
 
-const CHUNK_SIZE: u32 = 32; // How many tiles in each chunk
+const CHUNK_SIZE: u32 = 32; // How many tiles in each chunk ROW
 const TILE_SIZE: u32 = 32; // units, not necessarily pixels, but equal to pixels at default zoom
 
 trait Chunk<T: Tile> {
@@ -181,7 +185,8 @@ fn main() {
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_startup_system(setup_game.system())
         .add_startup_system(setup_fps_text.system())
-        .add_system(draw_chunks.system())
+        .add_system(chunk_management.system())
+        .add_system(update_chunk_textures.system())
         .add_system(fps_text_update_system.system())
         .run();
 }
@@ -201,16 +206,123 @@ fn setup_game(
         // Red dot for helpful alignment
         .spawn(SpriteComponents {
             material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+            transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+            sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
+            ..Default::default()
+        })
+        //Another at the right side of the first Chunk
+        .spawn(SpriteComponents {
+            material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
+            transform: Transform::from_translation(Vec3::new(
+                (CHUNK_SIZE * TILE_SIZE) as f32,
+                0.0,
+                1.0,
+            )),
             sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
             ..Default::default()
         });
 }
 
-fn draw_chunks(
+fn update_chunk_textures(
+    mut mut_textures: ResMut<Assets<Texture>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
+) {
+    for (material, chunk) in q.iter() {
+        // No clone
+        let mut chunk_material = materials.get(material).unwrap();
+        let chunk_pixel_format_size = {
+            let chunk_texture = mut_textures
+                .get_mut(chunk_material.texture.as_ref().unwrap())
+                .unwrap();
+            chunk_texture.format.pixel_size() as u32
+        };
+
+        for (tile_i, tile) in chunk.tiles.iter().enumerate() {
+            // For each Tile
+            let tile_i = tile_i as u32;
+            let bytes_per_tile = TILE_SIZE * chunk_pixel_format_size;
+            let bytes_per_row = CHUNK_SIZE * TILE_SIZE * chunk_pixel_format_size;
+            let tile_row = tile_i as u32 / CHUNK_SIZE;
+            let chunk_tex_tile_top_left =
+                tile_row * bytes_per_row + (tile_i % CHUNK_SIZE) * bytes_per_tile;
+
+            let tile_material = materials.get(tile.texture.clone()).unwrap();
+            let tile_texture_handle = match tile_material.texture {
+                None => {
+                    panic!("No texture found inside of tile_material")
+                }
+                Some(_) => tile_material.texture.as_ref().unwrap().clone(),
+            };
+
+            let tile_texture = {
+                let tile_texture = mut_textures.get(tile_texture_handle).unwrap();
+                // Gross, copy since we can't have 2 open textures which came from the bevy
+                // assets resource. Maybe open issue. Play with unsafe.
+                tile_texture.clone()
+            };
+
+            let x = chunk_material.texture.as_ref().unwrap();
+            // // What's this .clone for, or as_ref?
+            // Causes OOM
+            let chunk_texture = mut_textures.get_mut(x);
+
+            for row_i in 0..TILE_SIZE {
+                // For each row in the tile
+                // let chunk_position_row_begin =
+                //     (chunk_tex_tile_top_left + bytes_per_row * row_i) as usize;
+                // let chunk_position_row_end =
+                //     (chunk_position_row_begin + bytes_per_tile as usize) as usize; // end exclusive.
+                //
+                // let tile_row_size = TILE_SIZE * chunk_pixel_format_size;
+                // let tile_pos_start = (tile_row_size * row_i) as usize;
+                // let tile_pos_end = tile_pos_start + tile_row_size as usize;
+                //
+                // // move to debug assert
+                // if chunk_position_row_end - chunk_position_row_begin
+                //     != tile_pos_end - tile_pos_start
+                // {
+                //     panic!(
+                //         "Slice source has different length (src/dest) {}/{}",
+                //         tile_texture.data.len(),
+                //         chunk_position_row_end - chunk_position_row_begin
+                //     );
+                // }
+
+                // todo: assert on color format
+
+                // does copy from slice work?
+                //chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
+                //    .clone_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
+            }
+        }
+    }
+}
+
+fn create_brown_texture(pixel_width: u32, pixel_height: u32) -> Texture {
+    let color = vec![101u8, 67u8, 63u8, 255u8];
+    create_color_texture(&color, pixel_width, pixel_height)
+}
+
+fn create_green_texture(pixel_width: u32, pixel_height: u32) -> Texture {
+    let color = vec![0u8, 255u8, 0u8, 255u8];
+    create_color_texture(&color, pixel_width, pixel_height)
+}
+
+// Create brown sRGB square texture
+fn create_color_texture(color_bytes: &[u8], pixel_width: u32, pixel_height: u32) -> Texture {
+    Texture::new_fill(
+        bevy::prelude::Vec2::new(pixel_width as f32, pixel_height as f32),
+        &color_bytes,
+        Rgba8UnormSrgb,
+    )
+}
+
+fn chunk_management(
     commands: &mut Commands,
     windows: Res<Windows>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut textures: ResMut<Assets<Texture>>,
     center: Res<Center>,
     q: Query<(Entity, &FlappyChunk<FlappyTile>)>,
 ) {
@@ -231,12 +343,30 @@ fn draw_chunks(
         }
     }
 
-    // Should this be placed somewhere common, like a resource?
-    let brown_material = materials
-        .add(Color::rgb(101.0f32 / 255.0f32, 67.0f32 / 255.0f32, 63.0f32 / 255.0f32).into());
+    let mut rng = rand::thread_rng();
 
     for next_index in next_chunk_indices {
         if !current_chunk_indices.contains(&next_index) {
+            // Should this be placed somewhere cached, like a resource?
+            let brown_texture =
+                ColorMaterial::texture(textures.add(create_brown_texture(TILE_SIZE, TILE_SIZE)));
+            let brown_material = materials.add(brown_texture);
+            let green_texture =
+                ColorMaterial::texture(textures.add(create_green_texture(TILE_SIZE, TILE_SIZE)));
+            let green_material = materials.add(green_texture);
+
+            let r: u8 = rng.gen();
+            let chunk_texture_size = bevy::prelude::Vec2::new(
+                (CHUNK_SIZE * TILE_SIZE) as f32,
+                (CHUNK_SIZE * TILE_SIZE) as f32,
+            );
+            let texture = textures.add(Texture::new(
+                chunk_texture_size.clone(),
+                vec![0u8; ((CHUNK_SIZE * TILE_SIZE) * (CHUNK_SIZE * TILE_SIZE) * 4) as usize],
+                TextureFormat::Rgba8UnormSrgb,
+            ));
+            let chunk_texture = materials.add(ColorMaterial::texture(texture));
+
             let translate = chunk_index_to_world_pos_center(next_index.0, next_index.1);
             println!(
                 "spawning {} {} @ {} {}",
@@ -244,22 +374,23 @@ fn draw_chunks(
             );
             commands
                 .spawn(SpriteComponents {
-                    material: brown_material.clone(), // This should be the big chunk texture
+                    material: chunk_texture, // This should be the big chunk texture
                     transform: Transform::from_translation(Vec3::new(
                         translate.0,
                         translate.1,
                         0.0f32,
                     )),
-                    sprite: Sprite::new(bevy::prelude::Vec2::new(
-                        (CHUNK_SIZE * TILE_SIZE) as f32,
-                        (CHUNK_SIZE * TILE_SIZE) as f32,
-                    )),
+                    sprite: Sprite::new(chunk_texture_size),
                     ..Default::default()
                 })
                 .with(FlappyChunk {
                     tiles: vec![
                         FlappyTile {
-                            texture: brown_material.clone(), // This is the per tile texture
+                            texture: if r % 2 == 1 {
+                                brown_material.clone()
+                            } else {
+                                green_material.clone()
+                            }, // This is the per tile texture
                             kind: FlappyTileKind::Dirt
                         };
                         CHUNK_SIZE as usize * CHUNK_SIZE as usize
