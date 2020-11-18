@@ -280,9 +280,10 @@ fn setup_texture_atlas(
     mut mut_texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) {
     let width = TILE_WIDTH as f32;
+    let num_textures = 2.0f32;
     let mut atlas_builder = TextureAtlasBuilder::new(
         bevy::prelude::Vec2::new(width, width),
-        bevy::prelude::Vec2::new(width, width),
+        bevy::prelude::Vec2::new(width * num_textures, width),
     );
 
     let brown = create_brown_texture(TILE_WIDTH, TILE_WIDTH);
