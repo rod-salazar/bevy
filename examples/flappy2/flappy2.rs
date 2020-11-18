@@ -2,10 +2,11 @@ use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::texture::{TextureFormat, TextureFormat::Rgba8UnormSrgb},
-    utils::{AHashExt, HashMap, HashSet},
+    sprite::TextureAtlasBuilder,
+    utils::{AHashExt, HashSet},
 };
-use bevy_internal::asset::HandleId;
 use rand::Rng;
+use std::time::Duration;
 
 /**
 The plan is to design a Chunk system. The Chunk system is for storing world tiles in a way that they
@@ -171,25 +172,74 @@ impl<T: Tile> Chunk<T> for FlappyChunk<T> {
     }
 }
 
+struct MainCamera;
 struct Center(f32, f32);
+struct InputTimer(Timer);
 
 fn main() {
     App::build()
         .add_resource(WindowDescriptor {
             vsync: false,
-            // width: 200,
-            // height: 200,
             ..Default::default()
         })
         .add_resource(Center(0.0f32, 0.0f32))
+        .add_resource(InputTimer(Timer::new(
+            Duration::from_millis(25. as u64),
+            true,
+        )))
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
-        .add_startup_system(setup_game.system())
-        .add_startup_system(setup_fps_text.system())
-        .add_system(chunk_management.system())
-        .add_system(update_chunk_textures.system())
-        .add_system(fps_text_update_system.system())
+        .add_startup_system(setup_game)
+        .add_startup_system(setup_fps_text)
+        .add_startup_system(setup_texture_atlas)
+        .add_system(chunk_management)
+        .add_system(update_chunk_textures)
+        .add_system(fps_text_update_system)
+        .add_system(handle_input.system())
         .run();
+}
+
+fn handle_input(
+    mut input_timer: ResMut<InputTimer>,
+    time: ResMut<Time>,
+    keyboard_input: Res<Input<KeyCode>>,
+    mut center: ResMut<Center>,
+    mut q: Query<(Mut<Transform>,), With<MainCamera>>,
+) {
+    input_timer.0.tick(time.delta_seconds);
+
+    // Look into bevy_contrib_schedules as a replacement
+    if !input_timer.0.finished {
+        return;
+    }
+
+    let dx = if keyboard_input.pressed(KeyCode::Left) {
+        -6
+    } else if keyboard_input.pressed(KeyCode::Right) {
+        6
+    } else {
+        0
+    };
+
+    let dy = if keyboard_input.pressed(KeyCode::Down) {
+        -6
+    } else if keyboard_input.pressed(KeyCode::Up) {
+        6
+    } else {
+        0
+    };
+
+    if dx == 0 && dy == 0 {
+        return;
+    }
+
+    center.0 += dx as f32;
+    center.1 += dy as f32;
+
+    for (mut t,) in q.iter_mut() {
+        t.translation.set_x(center.0);
+        t.translation.set_y(center.1);
+    }
 }
 
 fn setup_game(
@@ -203,16 +253,17 @@ fn setup_game(
     println!("Window: {}/{}", width, height);
 
     commands
-        .spawn(Camera2dComponents::default())
+        .spawn(Camera2dBundle::default())
+        .with(MainCamera {})
         // Red dot for helpful alignment
-        .spawn(SpriteComponents {
+        .spawn(SpriteBundle {
             material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
             transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
             sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
             ..Default::default()
         })
         //Another at the right side of the first Chunk
-        .spawn(SpriteComponents {
+        .spawn(SpriteBundle {
             material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
             transform: Transform::from_translation(Vec3::new(
                 (CHUNK_WIDTH * TILE_WIDTH) as f32,
@@ -224,8 +275,31 @@ fn setup_game(
         });
 }
 
+fn setup_texture_atlas(
+    mut mut_textures: ResMut<Assets<Texture>>,
+    mut mut_texture_atlases: ResMut<Assets<TextureAtlas>>,
+) {
+    let width = TILE_WIDTH as f32;
+    let mut atlas_builder = TextureAtlasBuilder::new(
+        bevy::prelude::Vec2::new(width, width),
+        bevy::prelude::Vec2::new(width, width),
+    );
+
+    let brown = create_brown_texture(TILE_WIDTH, TILE_WIDTH);
+    let green = create_green_texture(TILE_WIDTH, TILE_WIDTH);
+
+    let brown_handle = mut_textures.add(brown);
+    let green_handle = mut_textures.add(green);
+    let brown = mut_textures.get(brown_handle.clone()).unwrap();
+    let green = mut_textures.get(green_handle.clone()).unwrap();
+    atlas_builder.add_texture(brown_handle, brown);
+    atlas_builder.add_texture(green_handle, green);
+
+    let atlas = atlas_builder.finish(&mut *mut_textures).unwrap();
+    mut_texture_atlases.add(atlas);
+}
+
 fn update_chunk_textures(
-    // commands: &mut Commands,
     mut mut_textures: ResMut<Assets<Texture>>,
     materials: ResMut<Assets<ColorMaterial>>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
@@ -243,7 +317,6 @@ fn update_chunk_textures(
         let bytes_per_tile_row = TILE_WIDTH * chunk_pixel_format_size;
         let bytes_per_chunk_row = CHUNK_WIDTH * bytes_per_tile_row;
 
-        let mut seen_tiles = HashMap::new();
         for (tile_i, tile) in chunk.tiles.iter().enumerate() {
             // For each Tile
             let tile_i = tile_i as u32;
@@ -259,20 +332,11 @@ fn update_chunk_textures(
                 Some(_) => tile_material.texture.as_ref().unwrap().clone(),
             };
 
-            let uuid = match tile_texture_handle.id {
-                HandleId::Id(_, value) => value,
-                HandleId::AssetPathId(_) => {
-                    panic!("Did not expect asset path");
-                }
-            };
-
-            // doesn't help, all the handles have different uuids
-            let tile_texture: &Texture = seen_tiles.entry(uuid).or_insert_with(|| {
-                let tile_texture = mut_textures.get(tile_texture_handle).unwrap();
+            let tile_texture = {
                 // Gross, copy since we can't have 2 open textures which came from the bevy
                 // assets resource. Maybe open issue. Play with unsafe.
-                tile_texture.clone()
-            });
+                mut_textures.get(tile_texture_handle).unwrap().clone()
+            };
 
             // // What's this .clone for, or as_ref?
             let chunk_texture = mut_textures
@@ -301,9 +365,9 @@ fn update_chunk_textures(
 
                 // todo: assert on color format
 
-                // does copy from slice work?
+                // does copy from slice work with the same speed or faster than clone_from_slice?
                 chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
-                    .clone_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
+                    .copy_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
             }
         }
     }
@@ -335,6 +399,7 @@ fn chunk_management(
     mut textures: ResMut<Assets<Texture>>,
     center: Res<Center>,
     q: Query<(Entity, &FlappyChunk<FlappyTile>)>,
+    mut counter_q: Query<(Mut<ChunkCounter>,)>,
 ) {
     let window = windows.get_primary().unwrap();
     let width = window.width();
@@ -342,6 +407,9 @@ fn chunk_management(
 
     let world_rect = screen_info_to_world_rect(width as f32, height as f32, center.0, center.1);
     let next_chunk_indices = world_rect_to_chunk_indices(world_rect);
+    for (mut cc,) in counter_q.iter_mut() {
+        cc.0 = next_chunk_indices.len() as u32;
+    }
     let mut current_chunk_indices = HashSet::new();
     for (entity, flappy_chunk) in q.iter() {
         if !next_chunk_indices.contains(&(flappy_chunk.x(), flappy_chunk.y())) {
@@ -394,7 +462,7 @@ fn chunk_management(
                 next_index.0, next_index.1, translate.0, translate.1
             );
             commands
-                .spawn(SpriteComponents {
+                .spawn(SpriteBundle {
                     material: chunk_texture, // This should be the big chunk texture
                     transform: Transform::from_translation(Vec3::new(
                         translate.0,
@@ -415,13 +483,14 @@ fn chunk_management(
 
 // A unit struct to help identify the FPS UI component, since there may be many Text components
 struct FpsText;
+struct ChunkCounter(u32);
 
 fn setup_fps_text(commands: &mut Commands, asset_server: Res<AssetServer>) {
     commands
         // UI camera
-        .spawn(UiCameraComponents::default())
+        .spawn(UiCameraBundle::default())
         // texture
-        .spawn(TextComponents {
+        .spawn(TextBundle {
             node: Default::default(),
             style: Style {
                 align_self: AlignSelf::FlexEnd,
@@ -440,21 +509,22 @@ fn setup_fps_text(commands: &mut Commands, asset_server: Res<AssetServer>) {
             },
             ..Default::default()
         })
+        .with(ChunkCounter(0))
         .with(FpsText)
         .with(Timer::from_seconds(0.5, true));
 }
 
 fn fps_text_update_system(
     diagnostics: Res<Diagnostics>,
-    mut query: Query<(&mut Text, &FpsText, &Timer)>,
+    mut query: Query<(Mut<Text>, &FpsText, &Timer, &ChunkCounter)>,
 ) {
-    for (mut text, _tag, timer) in query.iter_mut() {
+    for (mut text, _tag, timer, chunk_counter) in query.iter_mut() {
         if !timer.finished {
             continue;
         }
         if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
             if let Some(average) = fps.average() {
-                text.value = format!("FPS: {:.2}", average);
+                text.value = format!("FPS/CHUNKS: {:.2}/{}", average, chunk_counter.0);
             }
         }
     }

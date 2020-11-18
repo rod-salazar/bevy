@@ -3,11 +3,20 @@ use bevy::{
     render::pass::ClearColor,
     sprite::collide_aabb::{collide, Collision},
 };
+use std::time::Duration;
+
+struct Center(f32, f32);
+struct InputTimer(Timer);
 
 /// An implementation of the classic game "Breakout"
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
+        .add_resource(Center(0.0f32, 0.0f32))
+        .add_resource(InputTimer(Timer::new(
+            Duration::from_millis(150. as u64),
+            true,
+        )))
         .add_resource(Scoreboard { score: 0 })
         .add_resource(ClearColor(Color::rgb(0.9, 0.9, 0.9)))
         .add_startup_system(setup)
@@ -15,7 +24,41 @@ fn main() {
         .add_system(ball_collision_system)
         .add_system(ball_movement_system)
         .add_system(scoreboard_system)
+        .add_system(handle_input)
         .run();
+}
+
+fn handle_input(
+    mut input_timer: ResMut<InputTimer>,
+    time: Res<Time>,
+    keyboard_input: Res<Input<KeyCode>>,
+    mut center: ResMut<Center>,
+) {
+    input_timer.0.tick(time.delta_seconds);
+
+    // Look into bevy_contrib_schedules as a replacement
+    if !input_timer.0.finished {
+        return;
+    }
+
+    let dx = if keyboard_input.pressed(KeyCode::Left) {
+        -1
+    } else if keyboard_input.pressed(KeyCode::Right) {
+        1
+    } else {
+        0
+    };
+
+    let dy = if keyboard_input.pressed(KeyCode::Down) {
+        -1
+    } else if keyboard_input.pressed(KeyCode::Up) {
+        1
+    } else {
+        0
+    };
+
+    center.0 += dx as f32;
+    center.1 += dy as f32;
 }
 
 struct Paddle {
