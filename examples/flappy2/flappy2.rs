@@ -192,8 +192,10 @@ fn main() {
         .add_startup_system(setup_game)
         .add_startup_system(setup_fps_text)
         .add_startup_system(setup_texture_atlas)
-        .add_system(chunk_management)
-        .add_system(update_chunk_textures)
+        .add_stage("chunk_management")
+        .add_system_to_stage("chunk_management", chunk_management)
+        .add_stage_after("chunk_management", "drawing_chunk")
+        .add_system_to_stage("drawing_chunk", update_chunk_textures)
         .add_system(fps_text_update_system)
         .add_system(handle_input.system())
         .run();
@@ -414,7 +416,7 @@ fn chunk_management(
     let mut current_chunk_indices = HashSet::new();
     for (entity, flappy_chunk) in q.iter() {
         if !next_chunk_indices.contains(&(flappy_chunk.x(), flappy_chunk.y())) {
-            println!("de-spawning {} {}", flappy_chunk.x(), flappy_chunk.y());
+            // println!("de-spawning {} {}", flappy_chunk.x(), flappy_chunk.y());
             commands.despawn(entity);
         } else {
             // It's current minus the ones that will be de-spawned anyway
@@ -458,10 +460,10 @@ fn chunk_management(
             let chunk_texture = materials.add(ColorMaterial::texture(texture));
 
             let translate = chunk_index_to_world_pos_center(next_index.0, next_index.1);
-            println!(
-                "spawning {} {} @ {} {}",
-                next_index.0, next_index.1, translate.0, translate.1
-            );
+            // println!(
+            //     "spawning {} {} @ {} {}",
+            //     next_index.0, next_index.1, translate.0, translate.1
+            // );
             commands
                 .spawn(SpriteBundle {
                     material: chunk_texture, // This should be the big chunk texture
