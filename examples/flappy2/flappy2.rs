@@ -5,6 +5,7 @@ use bevy::{
     sprite::TextureAtlasBuilder,
     utils::{AHashExt, HashSet},
 };
+use bevy_internal::render::texture::{Extent3d, TextureDimension};
 use rand::Rng;
 use std::time::Duration;
 
@@ -239,8 +240,8 @@ fn handle_input(
     center.1 += dy as f32;
 
     for (mut t,) in q.iter_mut() {
-        t.translation.set_x(center.0);
-        t.translation.set_y(center.1);
+        t.translation.x = center.0;
+        t.translation.y = center.1;
     }
 }
 
@@ -389,7 +390,12 @@ fn create_green_texture(pixel_width: u32, pixel_height: u32) -> Texture {
 // Create brown sRGB square texture
 fn create_color_texture(color_bytes: &[u8], pixel_width: u32, pixel_height: u32) -> Texture {
     Texture::new_fill(
-        bevy::prelude::Vec2::new(pixel_width as f32, pixel_height as f32),
+        Extent3d {
+            width: pixel_width,
+            height: pixel_height,
+            depth: 1,
+        },
+        TextureDimension::D2,
         &color_bytes,
         Rgba8UnormSrgb,
     )
@@ -453,7 +459,12 @@ fn chunk_management(
                 (CHUNK_WIDTH * TILE_WIDTH) as f32,
             );
             let texture = textures.add(Texture::new(
-                chunk_texture_size.clone(),
+                Extent3d {
+                    width: CHUNK_WIDTH * TILE_WIDTH,
+                    height: CHUNK_WIDTH * TILE_WIDTH,
+                    depth: 1,
+                },
+                TextureDimension::D2,
                 vec![0u8; ((CHUNK_WIDTH * TILE_WIDTH) * (CHUNK_WIDTH * TILE_WIDTH) * 4) as usize],
                 TextureFormat::Rgba8UnormSrgb,
             ));
