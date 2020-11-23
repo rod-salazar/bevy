@@ -1,11 +1,10 @@
 use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
-    render::texture::{TextureFormat, TextureFormat::Rgba8UnormSrgb},
+    render::texture::{Extent3d, TextureDimension, TextureFormat, TextureFormat::Rgba8UnormSrgb},
     sprite::TextureAtlasBuilder,
-    utils::{AHashExt, HashSet},
+    utils::{AHashExt, HashMap, HashSet},
 };
-use bevy_internal::render::texture::{Extent3d, TextureDimension};
 use rand::Rng;
 use std::time::Duration;
 
@@ -30,7 +29,7 @@ Each Chunk:
  */
 
 trait Tile {
-    fn texture(&self) -> &Handle<ColorMaterial>;
+    fn texture(&self) -> &Handle<Texture>;
 }
 
 const CHUNK_WIDTH: u32 = 16; // How many tiles in each chunk ROW
@@ -125,10 +124,12 @@ Example of chunk position
 #[derive(Clone)]
 enum FlappyTileKind {
     Dirt,
+    Grass,
 }
 
 struct FlappyTile {
-    texture: Handle<ColorMaterial>,
+    texture: Handle<Texture>,
+    rect: bevy::sprite::Rect,
     kind: FlappyTileKind,
 }
 
@@ -136,6 +137,7 @@ impl Clone for FlappyTile {
     fn clone(&self) -> Self {
         FlappyTile {
             texture: self.texture.clone(),
+            rect: self.rect.clone(),
             kind: self.kind.clone(),
         }
     }
@@ -146,7 +148,7 @@ impl Clone for FlappyTile {
 }
 
 impl Tile for FlappyTile {
-    fn texture(&self) -> &Handle<ColorMaterial> {
+    fn texture(&self) -> &Handle<Texture> {
         &self.texture
     }
 }
@@ -177,6 +179,20 @@ struct MainCamera;
 struct Center(f32, f32);
 struct InputTimer(Timer);
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+enum TextureName {
+    DIRT,
+    GRASS,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+enum TextureAtlasName {
+    LANDSCAPE,
+}
+
+struct TextureAtlasLookup(HashMap<TextureAtlasName, Handle<TextureAtlas>>);
+struct TextureAtlasTexLookup(HashMap<TextureName, Handle<Texture>>);
+
 fn main() {
     App::build()
         .add_resource(WindowDescriptor {
@@ -188,17 +204,21 @@ fn main() {
             Duration::from_millis(25. as u64),
             true,
         )))
+        .add_resource(TextureAtlasLookup(HashMap::new()))
+        .add_resource(TextureAtlasTexLookup(HashMap::new()))
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
+        // Setup
         .add_startup_system(setup_game)
         .add_startup_system(setup_fps_text)
         .add_startup_system(setup_texture_atlas)
+        // Regular stages
         .add_stage("chunk_management")
         .add_system_to_stage("chunk_management", chunk_management)
         .add_stage_after("chunk_management", "drawing_chunk")
         .add_system_to_stage("drawing_chunk", update_chunk_textures)
         .add_system(fps_text_update_system)
-        .add_system(handle_input.system())
+        .add_system(handle_input)
         .run();
 }
 
@@ -281,6 +301,8 @@ fn setup_game(
 fn setup_texture_atlas(
     mut mut_textures: ResMut<Assets<Texture>>,
     mut mut_texture_atlases: ResMut<Assets<TextureAtlas>>,
+    mut mut_texture_atlas_lookup: ResMut<TextureAtlasLookup>,
+    mut mut_texture_atlas_tex_lookup: ResMut<TextureAtlasTexLookup>,
 ) {
     let width = TILE_WIDTH as f32;
     let num_textures = 2.0f32;
@@ -292,15 +314,47 @@ fn setup_texture_atlas(
     let brown = create_brown_texture(TILE_WIDTH, TILE_WIDTH);
     let green = create_green_texture(TILE_WIDTH, TILE_WIDTH);
 
+    // Seems like I have to actually register them as assets to use the AtlasBuilder.
     let brown_handle = mut_textures.add(brown);
     let green_handle = mut_textures.add(green);
     let brown = mut_textures.get(brown_handle.clone()).unwrap();
     let green = mut_textures.get(green_handle.clone()).unwrap();
-    atlas_builder.add_texture(brown_handle, brown);
-    atlas_builder.add_texture(green_handle, green);
+    atlas_builder.add_texture(brown_handle.clone(), brown);
+    atlas_builder.add_texture(green_handle.clone(), green);
 
     let atlas = atlas_builder.finish(&mut *mut_textures).unwrap();
-    mut_texture_atlases.add(atlas);
+    let atlas_handle = mut_texture_atlases.add(atlas);
+
+    mut_textures.remove(brown_handle.clone());
+    mut_textures.remove(green_handle.clone());
+
+    mut_texture_atlas_lookup
+        .0
+        .insert(TextureAtlasName::LANDSCAPE, atlas_handle.clone());
+
+    mut_texture_atlas_tex_lookup
+        .0
+        .insert(TextureName::DIRT, brown_handle);
+    mut_texture_atlas_tex_lookup
+        .0
+        .insert(TextureName::GRASS, green_handle);
+}
+
+fn fetch_texture_by_name(
+    atlas_name: &TextureAtlasName,
+    name: &TextureName,
+    texture_atlas_lookup: &TextureAtlasLookup,
+    texture_atlas_tex_lookup: &TextureAtlasTexLookup,
+    texture_atlases: &Assets<TextureAtlas>,
+) -> (Handle<Texture>, bevy::sprite::Rect) {
+    let atlas_handle = texture_atlas_lookup.0.get(&atlas_name).unwrap();
+
+    let atlas = texture_atlases.get(atlas_handle).unwrap();
+    let dirt_handle = texture_atlas_tex_lookup.0.get(&name).unwrap();
+    let dirt_index = atlas.get_texture_index(dirt_handle).unwrap();
+
+    let dirt = atlas.textures[dirt_index];
+    (atlas.texture.clone(), dirt)
 }
 
 fn update_chunk_textures(
@@ -308,19 +362,21 @@ fn update_chunk_textures(
     materials: ResMut<Assets<ColorMaterial>>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
 ) {
-    for (material, chunk) in q.iter() {
+    for (chunk_material, chunk) in q.iter() {
         // No clone
-        let chunk_material = materials.get(material).unwrap();
-        let chunk_pixel_format_size = {
+        let chunk_material = materials.get(chunk_material).unwrap();
+        let srgb_pixel_format_size = {
             let chunk_texture = mut_textures
                 .get_mut(chunk_material.texture.as_ref().unwrap())
                 .unwrap();
             chunk_texture.format.pixel_size() as u32
         };
 
-        let bytes_per_tile_row = TILE_WIDTH * chunk_pixel_format_size;
+        let bytes_per_tile_row = TILE_WIDTH * srgb_pixel_format_size;
         let bytes_per_chunk_row = CHUNK_WIDTH * bytes_per_tile_row;
 
+        let mut tile_texture_map = HashMap::new();
+        let mut copied = false;
         for (tile_i, tile) in chunk.tiles.iter().enumerate() {
             // For each Tile
             let tile_i = tile_i as u32;
@@ -328,19 +384,18 @@ fn update_chunk_textures(
             let chunk_tex_tile_top_left = (tile_row * bytes_per_chunk_row * CHUNK_WIDTH)
                 + ((tile_i % CHUNK_WIDTH) * bytes_per_tile_row);
 
-            let tile_material = materials.get(tile.texture.clone()).unwrap();
-            let tile_texture_handle = match tile_material.texture {
-                None => {
-                    panic!("No texture found inside of tile_material")
+            // Copy once per frame
+            let tile_texture = tile_texture_map.entry(tile.texture.id).or_insert_with(|| {
+                if copied {
+                    panic!("Did not expect more than 1 copy");
                 }
-                Some(_) => tile_material.texture.as_ref().unwrap().clone(),
-            };
+                copied = true;
+                mut_textures.get(tile.texture.clone()).unwrap().clone()
+            });
 
-            let tile_texture = {
-                // Gross, copy since we can't have 2 open textures which came from the bevy
-                // assets resource. Maybe open issue. Play with unsafe.
-                mut_textures.get(tile_texture_handle).unwrap().clone()
-            };
+            let tile_rect = &tile.rect;
+            let bytes_per_atlas_row =
+                tile_texture.size.width as usize * srgb_pixel_format_size as usize;
 
             // // What's this .clone for, or as_ref?
             let chunk_texture = mut_textures
@@ -354,7 +409,11 @@ fn update_chunk_textures(
                 let chunk_position_row_end =
                     (chunk_position_row_begin + bytes_per_tile_row as usize) as usize; // end exclusive.
 
-                let tile_pos_start = (bytes_per_tile_row * tile_inner_row_i) as usize;
+                // print to verify
+                let tile_atlas_start_pos = bytes_per_atlas_row * (tile_rect.min.y as usize)
+                    + tile_rect.min.x as usize * srgb_pixel_format_size as usize;
+                let tile_pos_start =
+                    tile_atlas_start_pos + (bytes_per_atlas_row * tile_inner_row_i as usize);
                 let tile_pos_end = tile_pos_start + bytes_per_tile_row as usize;
 
                 debug_assert_eq!(
@@ -363,7 +422,7 @@ fn update_chunk_textures(
                 );
                 debug_assert_eq!(
                     (chunk_position_row_end - chunk_position_row_begin)
-                        % chunk_pixel_format_size as usize,
+                        % srgb_pixel_format_size as usize,
                     0
                 );
 
@@ -406,9 +465,12 @@ fn chunk_management(
     windows: Res<Windows>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut textures: ResMut<Assets<Texture>>,
+    texture_atlases: Res<Assets<TextureAtlas>>,
     center: Res<Center>,
     q: Query<(Entity, &FlappyChunk<FlappyTile>)>,
     mut counter_q: Query<(Mut<ChunkCounter>,)>,
+    texture_atlas_lookup: Res<TextureAtlasLookup>,
+    texture_atlas_tex_lookup: Res<TextureAtlasTexLookup>,
 ) {
     let window = windows.get_primary().unwrap();
     let width = window.width();
@@ -422,7 +484,7 @@ fn chunk_management(
     let mut current_chunk_indices = HashSet::new();
     for (entity, flappy_chunk) in q.iter() {
         if !next_chunk_indices.contains(&(flappy_chunk.x(), flappy_chunk.y())) {
-            // println!("de-spawning {} {}", flappy_chunk.x(), flappy_chunk.y());
+            println!("de-spawning {} {}", flappy_chunk.x(), flappy_chunk.y());
             commands.despawn(entity);
         } else {
             // It's current minus the ones that will be de-spawned anyway
@@ -432,26 +494,38 @@ fn chunk_management(
 
     let mut rng = rand::thread_rng();
 
+    let (brown_texture_handle, brown_rect) = fetch_texture_by_name(
+        &TextureAtlasName::LANDSCAPE,
+        &TextureName::DIRT,
+        &texture_atlas_lookup,
+        &texture_atlas_tex_lookup,
+        &texture_atlases,
+    );
+    let (green_texture_handle, green_rect) = fetch_texture_by_name(
+        &TextureAtlasName::LANDSCAPE,
+        &TextureName::GRASS,
+        &texture_atlas_lookup,
+        &texture_atlas_tex_lookup,
+        &texture_atlases,
+    );
+
     for next_index in next_chunk_indices {
         if !current_chunk_indices.contains(&next_index) {
-            // Should this be placed somewhere cached, like a resource?
-            let brown_texture =
-                ColorMaterial::texture(textures.add(create_brown_texture(TILE_WIDTH, TILE_WIDTH)));
-            let brown_material = materials.add(brown_texture);
-            let green_texture =
-                ColorMaterial::texture(textures.add(create_green_texture(TILE_WIDTH, TILE_WIDTH)));
-            let green_material = materials.add(green_texture);
-
             let mut tiles = vec![];
             for _i in 0..CHUNK_WIDTH * CHUNK_WIDTH {
                 let r: u8 = rng.gen();
                 tiles.push(FlappyTile {
                     texture: if r % 2 == 1 {
-                        brown_material.clone()
+                        brown_texture_handle.clone()
                     } else {
-                        green_material.clone()
+                        green_texture_handle.clone()
                     }, // This is the per tile texture
-                    kind: FlappyTileKind::Dirt,
+                    rect: if r % 2 == 1 { brown_rect } else { green_rect },
+                    kind: if r % 2 == 1 {
+                        FlappyTileKind::Dirt
+                    } else {
+                        FlappyTileKind::Grass
+                    },
                 });
             }
             let chunk_texture_size = bevy::prelude::Vec2::new(
@@ -471,10 +545,10 @@ fn chunk_management(
             let chunk_texture = materials.add(ColorMaterial::texture(texture));
 
             let translate = chunk_index_to_world_pos_center(next_index.0, next_index.1);
-            // println!(
-            //     "spawning {} {} @ {} {}",
-            //     next_index.0, next_index.1, translate.0, translate.1
-            // );
+            println!(
+                "spawning {} {} @ {} {}",
+                next_index.0, next_index.1, translate.0, translate.1
+            );
             commands
                 .spawn(SpriteBundle {
                     material: chunk_texture, // This should be the big chunk texture
