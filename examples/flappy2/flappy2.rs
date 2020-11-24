@@ -3,10 +3,18 @@ use bevy::{
     prelude::*,
     render::texture::{Extent3d, TextureDimension, TextureFormat, TextureFormat::Rgba8UnormSrgb},
     sprite::TextureAtlasBuilder,
+    tasks::{TaskPool, TaskPoolBuilder},
+    type_registry::TypeUuid,
     utils::{AHashExt, HashMap, HashSet},
 };
+///use futures_lite::pin;
 use rand::Rng;
-use std::time::Duration;
+use std::{
+    fmt::Debug,
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 /**
 The plan is to design a Chunk system. The Chunk system is for storing world tiles in a way that they
@@ -193,6 +201,8 @@ enum TextureAtlasName {
 struct TextureAtlasLookup(HashMap<TextureAtlasName, Handle<TextureAtlas>>);
 struct TextureAtlasTexLookup(HashMap<TextureName, Handle<Texture>>);
 
+struct ChunkPool(TaskPool);
+
 fn main() {
     App::build()
         .add_resource(WindowDescriptor {
@@ -206,6 +216,11 @@ fn main() {
         )))
         .add_resource(TextureAtlasLookup(HashMap::new()))
         .add_resource(TextureAtlasTexLookup(HashMap::new()))
+        .add_resource(ChunkPool(
+            TaskPoolBuilder::new()
+                .thread_name("Chunk Pool".to_string())
+                .build(),
+        ))
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         // Setup
@@ -279,12 +294,12 @@ fn setup_game(
         .spawn(Camera2dBundle::default())
         .with(MainCamera {})
         // Red dot for helpful alignment
-        .spawn(SpriteBundle {
-            material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
-            sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
-            ..Default::default()
-        })
+        // .spawn(SpriteBundle {
+        //     material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
+        //     transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+        //     sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
+        //     ..Default::default()
+        // })
         //Another at the right side of the first Chunk
         .spawn(SpriteBundle {
             material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
@@ -358,17 +373,18 @@ fn fetch_texture_by_name(
 }
 
 fn update_chunk_textures(
-    mut mut_textures: ResMut<Assets<Texture>>,
+    textures: ResMut<Assets<Texture>>,
     materials: ResMut<Assets<ColorMaterial>>,
+    pool: Res<ChunkPool>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
 ) {
     for (chunk_material, chunk) in q.iter() {
-        // No clone
-        let chunk_material = materials.get(chunk_material).unwrap();
+        let chunk_texture_handle = {
+            let chunk_material = materials.get(chunk_material).unwrap();
+            chunk_material.texture.as_ref().unwrap().clone()
+        };
         let srgb_pixel_format_size = {
-            let chunk_texture = mut_textures
-                .get_mut(chunk_material.texture.as_ref().unwrap())
-                .unwrap();
+            let chunk_texture = textures.get(chunk_texture_handle.clone()).unwrap();
             chunk_texture.format.pixel_size() as u32
         };
 
@@ -377,6 +393,23 @@ fn update_chunk_textures(
 
         let mut tile_texture_map = HashMap::new();
         let mut copied = false;
+
+        for tile in chunk.tiles.iter() {
+            tile_texture_map.entry(tile.texture.id).or_insert_with(|| {
+                if copied {
+                    panic!("Did not expect more than 1 copy");
+                }
+                copied = true;
+                textures.get(tile.texture.clone()).unwrap().clone()
+            });
+        }
+
+        // SAD clone. If we want to use multi-threading then we need to clone since
+        // taking a mutable borrow on the texture means the future does as well,
+        // but then only 1 future at a time can take a mutable borrow since Assets
+        // API at the moment makes you take the borrow on the entire thing.
+        let mut chunk_texture = textures.get(chunk_texture_handle.clone()).unwrap().clone();
+
         for (tile_i, tile) in chunk.tiles.iter().enumerate() {
             // For each Tile
             let tile_i = tile_i as u32;
@@ -385,22 +418,11 @@ fn update_chunk_textures(
                 + ((tile_i % CHUNK_WIDTH) * bytes_per_tile_row);
 
             // Copy once per frame
-            let tile_texture = tile_texture_map.entry(tile.texture.id).or_insert_with(|| {
-                if copied {
-                    panic!("Did not expect more than 1 copy");
-                }
-                copied = true;
-                mut_textures.get(tile.texture.clone()).unwrap().clone()
-            });
+            let tile_texture = tile_texture_map.get(&tile.texture.id).unwrap();
 
             let tile_rect = &tile.rect;
             let bytes_per_atlas_row =
                 tile_texture.size.width as usize * srgb_pixel_format_size as usize;
-
-            // // What's this .clone for, or as_ref?
-            let chunk_texture = mut_textures
-                .get_mut(chunk_material.texture.as_ref().unwrap())
-                .unwrap();
 
             for tile_inner_row_i in 0..TILE_WIDTH {
                 // For each row in the tile
@@ -484,7 +506,7 @@ fn chunk_management(
     let mut current_chunk_indices = HashSet::new();
     for (entity, flappy_chunk) in q.iter() {
         if !next_chunk_indices.contains(&(flappy_chunk.x(), flappy_chunk.y())) {
-            println!("de-spawning {} {}", flappy_chunk.x(), flappy_chunk.y());
+            //println!("de-spawning {} {}", flappy_chunk.x(), flappy_chunk.y());
             commands.despawn(entity);
         } else {
             // It's current minus the ones that will be de-spawned anyway
@@ -545,10 +567,10 @@ fn chunk_management(
             let chunk_texture = materials.add(ColorMaterial::texture(texture));
 
             let translate = chunk_index_to_world_pos_center(next_index.0, next_index.1);
-            println!(
-                "spawning {} {} @ {} {}",
-                next_index.0, next_index.1, translate.0, translate.1
-            );
+            // println!(
+            //     "spawning {} {} @ {} {}",
+            //     next_index.0, next_index.1, translate.0, translate.1
+            // );
             commands
                 .spawn(SpriteBundle {
                     material: chunk_texture, // This should be the big chunk texture
