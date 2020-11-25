@@ -8,7 +8,10 @@ use bevy::{
 };
 ///use futures_lite::pin;
 use rand::Rng;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 /**
 The plan is to design a Chunk system. The Chunk system is for storing world tiles in a way that they
@@ -369,12 +372,14 @@ fn fetch_texture_by_name(
 fn update_chunk_textures(
     mut textures: ResMut<Assets<Texture>>,
     materials: ResMut<Assets<ColorMaterial>>,
-    //pool: Res<ChunkPool>,
+    pool: Res<ChunkPool>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
 ) {
+    let mut tasks = vec![];
+    let new_textures = Arc::new(Mutex::new(HashMap::new()));
     for (chunk_material, chunk) in q.iter() {
         let chunk_texture_handle = {
-            let chunk_material = materials.get(chunk_material).unwrap();
+            let chunk_material = materials.get(chunk_material.clone()).unwrap();
             chunk_material.texture.as_ref().unwrap().clone()
         };
         let srgb_pixel_format_size = {
@@ -388,7 +393,6 @@ fn update_chunk_textures(
         let mut tile_texture_map = HashMap::new();
         let mut copied = false;
 
-        // Probably do this inline, this was a failed experiment
         for tile in chunk.tiles.iter() {
             tile_texture_map.entry(tile.texture.id).or_insert_with(|| {
                 if copied {
@@ -399,57 +403,77 @@ fn update_chunk_textures(
             });
         }
 
-        // SAD clone. If we want to use multi-threading then we need to clone since
-        // taking a mutable borrow on the texture means the future does as well,
-        // but then only 1 future at a time can take a mutable borrow since Assets
-        // API at the moment makes you take the borrow on the entire thing.
-        let chunk_texture = textures.get_mut(chunk_texture_handle.clone()).unwrap();
+        let chunk_texture = textures.get(chunk_texture_handle.clone()).unwrap();
+        let new_textures = new_textures.clone();
+        let clone_and_update = async move {
+            // SAD allocate and clone. If we want to use multi-threading then we need to clone since
+            // taking a mutable borrow on the texture means the future does as well,
+            // but then only 1 future at a time can take a mutable borrow since Assets
+            // API at the moment makes you take the borrow on the entire thing.
+            let mut chunk_texture = chunk_texture.clone();
 
-        for (tile_i, tile) in chunk.tiles.iter().enumerate() {
-            // For each Tile
-            let tile_i = tile_i as u32;
-            let tile_row = tile_i as u32 / CHUNK_WIDTH;
-            let chunk_tex_tile_top_left = (tile_row * bytes_per_chunk_row * CHUNK_WIDTH)
-                + ((tile_i % CHUNK_WIDTH) * bytes_per_tile_row);
+            for (tile_i, tile) in chunk.tiles.iter().enumerate() {
+                // For each Tile
+                let tile_i = tile_i as u32;
+                let tile_row = tile_i as u32 / CHUNK_WIDTH;
+                let chunk_tex_tile_top_left = (tile_row * bytes_per_chunk_row * CHUNK_WIDTH)
+                    + ((tile_i % CHUNK_WIDTH) * bytes_per_tile_row);
 
-            // Copy once per frame
-            let tile_texture = tile_texture_map.get(&tile.texture.id).unwrap();
+                // Copy once per frame
+                let tile_texture = tile_texture_map.get(&tile.texture.id).unwrap();
 
-            let tile_rect = &tile.rect;
-            let bytes_per_atlas_row =
-                tile_texture.size.width as usize * srgb_pixel_format_size as usize;
+                let tile_rect = &tile.rect;
+                let bytes_per_atlas_row =
+                    tile_texture.size.width as usize * srgb_pixel_format_size as usize;
 
-            for tile_inner_row_i in 0..TILE_WIDTH {
-                // For each row in the tile
-                let chunk_position_row_begin =
-                    (chunk_tex_tile_top_left + (bytes_per_chunk_row * tile_inner_row_i)) as usize;
-                let chunk_position_row_end =
-                    (chunk_position_row_begin + bytes_per_tile_row as usize) as usize; // end exclusive.
+                for tile_inner_row_i in 0..TILE_WIDTH {
+                    // For each row in the tile
+                    let chunk_position_row_begin = (chunk_tex_tile_top_left
+                        + (bytes_per_chunk_row * tile_inner_row_i))
+                        as usize;
+                    let chunk_position_row_end =
+                        (chunk_position_row_begin + bytes_per_tile_row as usize) as usize; // end exclusive.
 
-                // print to verify
-                let tile_atlas_start_pos = bytes_per_atlas_row * (tile_rect.min.y as usize)
-                    + tile_rect.min.x as usize * srgb_pixel_format_size as usize;
-                let tile_pos_start =
-                    tile_atlas_start_pos + (bytes_per_atlas_row * tile_inner_row_i as usize);
-                let tile_pos_end = tile_pos_start + bytes_per_tile_row as usize;
+                    // print to verify
+                    let tile_atlas_start_pos = bytes_per_atlas_row * (tile_rect.min.y as usize)
+                        + tile_rect.min.x as usize * srgb_pixel_format_size as usize;
+                    let tile_pos_start =
+                        tile_atlas_start_pos + (bytes_per_atlas_row * tile_inner_row_i as usize);
+                    let tile_pos_end = tile_pos_start + bytes_per_tile_row as usize;
 
-                debug_assert_eq!(
-                    chunk_position_row_end - chunk_position_row_begin,
-                    tile_pos_end - tile_pos_start
-                );
-                debug_assert_eq!(
-                    (chunk_position_row_end - chunk_position_row_begin)
-                        % srgb_pixel_format_size as usize,
-                    0
-                );
+                    debug_assert_eq!(
+                        chunk_position_row_end - chunk_position_row_begin,
+                        tile_pos_end - tile_pos_start
+                    );
+                    debug_assert_eq!(
+                        (chunk_position_row_end - chunk_position_row_begin)
+                            % srgb_pixel_format_size as usize,
+                        0
+                    );
+                    // todo: assert on color format
 
-                // todo: assert on color format
-
-                // does copy from slice work with the same speed or faster than clone_from_slice?
-                chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
-                    .copy_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
+                    // does copy from slice work with the same speed or faster than clone_from_slice?
+                    chunk_texture.data[chunk_position_row_begin..chunk_position_row_end]
+                        .copy_from_slice(&tile_texture.data[tile_pos_start..tile_pos_end]);
+                }
             }
+            let mut new_textures = new_textures.lock().unwrap();
+            new_textures.insert(chunk_texture_handle.clone(), chunk_texture);
+        };
+        tasks.push(clone_and_update);
+    }
+
+    pool.0.scope(|s| {
+        for task in tasks {
+            s.spawn(async move {
+                task.await;
+            });
         }
+    });
+
+    let mut new_textures = new_textures.lock().unwrap();
+    for (handle, texture) in new_textures.drain() {
+        textures.set(handle.clone(), texture);
     }
 }
 
