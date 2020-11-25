@@ -322,7 +322,7 @@ fn handle_input(
 
 fn setup_game(
     commands: &mut Commands,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    // mut materials: ResMut<Assets<ColorMaterial>>,
     windows: Res<Windows>,
 ) {
     let window = windows.get_primary().unwrap();
@@ -333,24 +333,25 @@ fn setup_game(
     commands
         .spawn(Camera2dBundle::default())
         .with(MainCamera {})
-        // Red dot for helpful alignment
-        // .spawn(SpriteBundle {
-        //     material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
-        //     transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
-        //     sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
-        //     ..Default::default()
-        // })
-        //Another at the right side of the first Chunk
-        .spawn(SpriteBundle {
-            material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
-            transform: Transform::from_translation(Vec3::new(
-                (CHUNK_WIDTH * TILE_WIDTH) as f32,
-                0.0,
-                1.0,
-            )),
-            sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
-            ..Default::default()
-        });
+    // Red dot for helpful alignment
+    // .spawn(SpriteBundle {
+    //     material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
+    //     transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+    //     sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
+    //     ..Default::default()
+    // })
+    //Another at the right side of the first Chunk
+    // .spawn(SpriteBundle {
+    //     material: materials.add(Color::rgb(1.0f32, 0.0f32 / 0.0f32, 0.0f32 / 255.0f32).into()),
+    //     transform: Transform::from_translation(Vec3::new(
+    //         (CHUNK_WIDTH * TILE_WIDTH) as f32,
+    //         0.0,
+    //         1.0,
+    //     )),
+    //     sprite: Sprite::new(bevy::prelude::Vec2::new(2 as f32, 2 as f32)),
+    //     ..Default::default()
+    // })
+    ;
 }
 
 fn setup_texture_atlas(
@@ -662,6 +663,7 @@ fn chunk_management(
 // A unit struct to help identify the FPS UI component, since there may be many Text components
 struct FpsText;
 struct ChunkCounter(u32);
+struct FpsAverage(f32, u32); // running average, seconds total
 
 fn setup_fps_text(commands: &mut Commands, asset_server: Res<AssetServer>) {
     commands
@@ -689,20 +691,29 @@ fn setup_fps_text(commands: &mut Commands, asset_server: Res<AssetServer>) {
         })
         .with(ChunkCounter(0))
         .with(FpsText)
-        .with(Timer::from_seconds(0.5, true));
+        .with(Timer::from_seconds(1.0f32, true))
+        .with(FpsAverage(0f32, 0));
 }
 
 fn fps_text_update_system(
     diagnostics: Res<Diagnostics>,
-    mut query: Query<(Mut<Text>, &FpsText, &Timer, &ChunkCounter)>,
+    mut query: Query<(Mut<Text>, &FpsText, &Timer, &ChunkCounter, Mut<FpsAverage>)>,
 ) {
-    for (mut text, _tag, timer, chunk_counter) in query.iter_mut() {
+    for (mut text, _tag, timer, chunk_counter, mut fps_average) in query.iter_mut() {
         if !timer.finished {
             continue;
         }
+        // assumes timer is @ 1s interval
+
         if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
             if let Some(average) = fps.average() {
-                text.value = format!("FPS/CHUNKS: {:.2}/{}", average, chunk_counter.0);
+                fps_average.0 = ((fps_average.0 * fps_average.1 as f32) + average as f32)
+                    / (fps_average.1 + 1) as f32;
+                fps_average.1 += 1;
+                text.value = format!(
+                    "FPS/CHUNKS/AVG/SECS: {:.2}/{}/{}/{}",
+                    average, chunk_counter.0, fps_average.0, fps_average.1
+                );
             }
         }
     }
