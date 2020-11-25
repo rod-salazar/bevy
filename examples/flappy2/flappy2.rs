@@ -200,6 +200,48 @@ struct TextureAtlasTexLookup(HashMap<TextureName, Handle<Texture>>);
 
 struct ChunkPool(TaskPool);
 
+trait Creator<T: Sync> {
+    fn create(&self) -> T;
+}
+
+struct ChunkTextureCreator {}
+
+impl Creator<Texture> for ChunkTextureCreator {
+    fn create(&self) -> Texture {
+        println!("Allocating chunk texture");
+        create_black_texture(CHUNK_WIDTH * TILE_WIDTH, CHUNK_WIDTH * TILE_WIDTH)
+    }
+}
+
+struct ArenaBar<T: Sync, C: Creator<T>> {
+    pool: Vec<T>,
+    creator: C,
+}
+
+impl<T: Sync, C: Creator<T>> ArenaBar<T, C> {
+    fn new(size: u32, creator: C) -> Self {
+        let mut pool = vec![];
+        for _ in 0..size {
+            let t = creator.create();
+            pool.push(t);
+        }
+
+        ArenaBar { pool, creator }
+    }
+
+    // Always creates one otherwise.
+    fn pop(&mut self) -> T {
+        match self.pool.pop() {
+            None => self.creator.create(),
+            Some(value) => value,
+        }
+    }
+
+    fn push(&mut self, value: T) {
+        self.pool.push(value);
+    }
+}
+
 fn main() {
     App::build()
         .add_resource(WindowDescriptor {
@@ -218,6 +260,7 @@ fn main() {
                 .thread_name("Chunk Pool".to_string())
                 .build(),
         ))
+        .add_resource(ArenaBar::new(80, ChunkTextureCreator {}))
         .add_plugins(DefaultPlugins)
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         // Setup
@@ -373,6 +416,7 @@ fn update_chunk_textures(
     mut textures: ResMut<Assets<Texture>>,
     materials: ResMut<Assets<ColorMaterial>>,
     pool: Res<ChunkPool>,
+    mut arena: ResMut<ArenaBar<Texture, ChunkTextureCreator>>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
 ) {
     let mut tasks = vec![];
@@ -403,14 +447,13 @@ fn update_chunk_textures(
             });
         }
 
-        let chunk_texture = textures.get(chunk_texture_handle.clone()).unwrap();
+        let mut chunk_texture = arena.pop();
         let new_textures = new_textures.clone();
         let clone_and_update = async move {
             // SAD allocate and clone. If we want to use multi-threading then we need to clone since
             // taking a mutable borrow on the texture means the future does as well,
             // but then only 1 future at a time can take a mutable borrow since Assets
             // API at the moment makes you take the borrow on the entire thing.
-            let mut chunk_texture = chunk_texture.clone();
 
             for (tile_i, tile) in chunk.tiles.iter().enumerate() {
                 // For each Tile
@@ -473,8 +516,14 @@ fn update_chunk_textures(
 
     let mut new_textures = new_textures.lock().unwrap();
     for (handle, texture) in new_textures.drain() {
-        textures.set(handle.clone(), texture);
+        let old = textures.swap(handle.clone(), texture).unwrap();
+        arena.push(old);
     }
+}
+
+fn create_black_texture(pixel_width: u32, pixel_height: u32) -> Texture {
+    let color = vec![0u8, 0u8, 0u8, 255u8];
+    create_color_texture(&color, pixel_width, pixel_height)
 }
 
 fn create_brown_texture(pixel_width: u32, pixel_height: u32) -> Texture {
