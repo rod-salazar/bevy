@@ -4,17 +4,11 @@ use bevy::{
     render::texture::{Extent3d, TextureDimension, TextureFormat, TextureFormat::Rgba8UnormSrgb},
     sprite::TextureAtlasBuilder,
     tasks::{TaskPool, TaskPoolBuilder},
-    type_registry::TypeUuid,
     utils::{AHashExt, HashMap, HashSet},
 };
 ///use futures_lite::pin;
 use rand::Rng;
-use std::{
-    fmt::Debug,
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
 /**
 The plan is to design a Chunk system. The Chunk system is for storing world tiles in a way that they
@@ -373,9 +367,9 @@ fn fetch_texture_by_name(
 }
 
 fn update_chunk_textures(
-    textures: ResMut<Assets<Texture>>,
+    mut textures: ResMut<Assets<Texture>>,
     materials: ResMut<Assets<ColorMaterial>>,
-    pool: Res<ChunkPool>,
+    //pool: Res<ChunkPool>,
     q: Query<(&Handle<ColorMaterial>, &FlappyChunk<FlappyTile>)>,
 ) {
     for (chunk_material, chunk) in q.iter() {
@@ -394,6 +388,7 @@ fn update_chunk_textures(
         let mut tile_texture_map = HashMap::new();
         let mut copied = false;
 
+        // Probably do this inline, this was a failed experiment
         for tile in chunk.tiles.iter() {
             tile_texture_map.entry(tile.texture.id).or_insert_with(|| {
                 if copied {
@@ -408,7 +403,7 @@ fn update_chunk_textures(
         // taking a mutable borrow on the texture means the future does as well,
         // but then only 1 future at a time can take a mutable borrow since Assets
         // API at the moment makes you take the borrow on the entire thing.
-        let mut chunk_texture = textures.get(chunk_texture_handle.clone()).unwrap().clone();
+        let chunk_texture = textures.get_mut(chunk_texture_handle.clone()).unwrap();
 
         for (tile_i, tile) in chunk.tiles.iter().enumerate() {
             // For each Tile
