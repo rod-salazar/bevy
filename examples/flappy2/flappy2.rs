@@ -284,10 +284,10 @@ fn handle_input(
     mut center: ResMut<Center>,
     mut q: Query<(Mut<Transform>,), With<MainCamera>>,
 ) {
-    input_timer.0.tick(time.delta_seconds);
+    input_timer.0.tick(time.delta_seconds());
 
     // Look into bevy_contrib_schedules as a replacement
-    if !input_timer.0.finished {
+    if !input_timer.0.finished() {
         return;
     }
 
@@ -700,7 +700,7 @@ fn fps_text_update_system(
     mut query: Query<(Mut<Text>, &FpsText, &Timer, &ChunkCounter, Mut<FpsAverage>)>,
 ) {
     for (mut text, _tag, timer, chunk_counter, mut fps_average) in query.iter_mut() {
-        if !timer.finished {
+        if !timer.finished() {
             continue;
         }
         // assumes timer is @ 1s interval
