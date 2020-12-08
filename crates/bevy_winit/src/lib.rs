@@ -247,9 +247,15 @@ pub fn winit_runner(mut app: App) {
                     let position = Vec2::new(position.x, y_position);
                     window.update_cursor_position_from_backend(Some(position));
 
+                    let normalized_position = Vec2::new(
+                        position.x / inner_size.width,
+                        y_position / inner_size.height,
+                    );
+
                     cursor_moved_events.send(CursorMoved {
                         id: window_id,
                         position,
+                        normalized_position,
                     });
                 }
                 WindowEvent::CursorEntered { .. } => {
