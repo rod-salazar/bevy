@@ -65,10 +65,8 @@ pub enum BindGroupStatus {
 #[derive(Eq, PartialEq, Debug, Default, Clone)]
 pub struct RenderResourceBindings {
     pub bindings: HashMap<String, RenderResourceBinding>,
-    /// A Buffer that contains all attributes a mesh has defined
-    pub vertex_attribute_buffer: Option<BufferId>,
-    /// A Buffer that is filled with zeros that will be used for attributes required by the shader, but undefined by the mesh.
-    pub vertex_fallback_buffer: Option<BufferId>,
+    /// Buffers that contain all attributes a mesh has defined, including fallback mesh data
+    pub vertex_attribute_buffers: Vec<BufferId>,
     pub index_buffer: Option<BufferId>,
     assets: HashSet<(HandleUntyped, TypeId)>,
     bind_groups: HashMap<BindGroupId, BindGroup>,

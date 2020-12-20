@@ -321,8 +321,8 @@ impl<'a> DrawContext<'a> {
             if let Some(index_buffer) = bindings.index_buffer {
                 draw.set_index_buffer(index_buffer, 0);
             }
-            if let Some(main_vertex_buffer) = bindings.vertex_attribute_buffer {
-                draw.set_vertex_buffer(0, main_vertex_buffer, 0);
+            for (index, bufferId) in bindings.vertex_attribute_buffers.iter().enumerate() {
+                draw.set_vertex_buffer(index as u32, *bufferId, 0); // *?, as u32?
             }
         }
         Ok(())

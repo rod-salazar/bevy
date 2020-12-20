@@ -20,6 +20,10 @@ pub struct RenderPipeline {
 
 impl RenderPipeline {
     pub fn new(pipeline: Handle<PipelineDescriptor>) -> Self {
+        // You can have many RenderPipelines with the same pipeline descriptor.
+        // Many will use Forward pipeline. This ends up being that when you compile a pipeline,
+        // the pipeline compiler knows about many different specialization for the same shader:
+        //  specialized_shaders: HashMap<Handle<Shader>, Vec<SpecializedShader>>,
         RenderPipeline {
             specialization: Default::default(),
             pipeline,
@@ -108,6 +112,9 @@ pub fn draw_render_pipelines_system(
             if pipeline.dynamic_bindings_generation
                 != render_pipelines.bindings.dynamic_bindings_generation()
             {
+                // Collect each render_pipeline's dynamic bindings and synchronize them
+                // with the dynamic bindings specialization of each pipeline.
+                // What is a dynamic binding really?
                 pipeline.specialization.dynamic_bindings = render_pipelines
                     .bindings
                     .iter_dynamic_bindings()
@@ -134,7 +141,7 @@ pub fn draw_render_pipelines_system(
         for render_pipeline in render_pipelines.pipelines.iter_mut() {
             let render_resource_bindings = &mut [
                 &mut render_pipelines.bindings,
-                &mut render_resource_bindings,
+                &mut render_resource_bindings, // Why do we need a global resource for this?
             ];
             draw_context
                 .set_pipeline(

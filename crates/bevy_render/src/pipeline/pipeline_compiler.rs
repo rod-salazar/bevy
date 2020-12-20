@@ -16,7 +16,7 @@ pub struct PipelineSpecialization {
     pub primitive_topology: PrimitiveTopology,
     pub dynamic_bindings: HashSet<String>,
     pub index_format: IndexFormat,
-    pub vertex_buffer_descriptor: VertexBufferDescriptor,
+    pub vertex_buffer_descriptors: Vec<VertexBufferDescriptor>,
     pub sample_count: u32,
 }
 
@@ -28,7 +28,7 @@ impl Default for PipelineSpecialization {
             shader_specialization: Default::default(),
             primitive_topology: Default::default(),
             dynamic_bindings: Default::default(),
-            vertex_buffer_descriptor: Default::default(),
+            vertex_buffer_descriptors: Default::default(),
         }
     }
 }
@@ -70,14 +70,23 @@ impl PipelineCompiler {
         render_resource_context: &dyn RenderResourceContext,
         shaders: &mut Assets<Shader>,
         shader_handle: &Handle<Shader>,
+        // Given from the pipeline ... smart enough to know which shader defs are needed
         shader_specialization: &ShaderSpecialization,
     ) -> Result<Handle<Shader>, ShaderError> {
+        // This is the only place where we actually insert into specialized_shaders.
+        // This means that this call-site is where "specializations are "registered" or created.
+        // We are given a shader asset handle and insert an empty vector as the value.
         let specialized_shaders = self
             .specialized_shaders
             .entry(shader_handle.clone_weak())
             .or_insert_with(Vec::new);
 
+        // shader must exist, can't be None
         let shader = shaders.get(shader_handle).unwrap();
+
+        // Rod: Here we exit early if we are already spirv. Unclear if we are trying
+        // to get it into spirv or if spriv is just a special case that can't be worked with...
+        // after reading... maybe you just can not create specialized versions of it.
 
         // don't produce new shader if the input source is already spirv
         if let ShaderSource::Spirv(_) = shader.source {
@@ -85,11 +94,13 @@ impl PipelineCompiler {
         }
 
         if let Some(specialized_shader) =
+            // We are going over all specialized_shaders, not just the one regarding the shader we are compiling here.
             specialized_shaders
-                .iter()
-                .find(|current_specialized_shader| {
-                    current_specialized_shader.specialization == *shader_specialization
-                })
+            .iter()
+            .find(|current_specialized_shader| {
+                // can this be sped up? Hash of the HashSet?
+                current_specialized_shader.specialization == *shader_specialization
+            })
         {
             // if shader has already been compiled with current configuration, use existing shader
             Ok(specialized_shader.shader.clone_weak())
@@ -202,44 +213,63 @@ impl PipelineCompiler {
         // create a vertex layout that provides all attributes from either the specialized vertex buffers or a zero buffer
         let mut pipeline_layout = specialized_descriptor.layout.as_mut().unwrap();
         // the vertex buffer descriptor of the mesh
-        let mesh_vertex_buffer_descriptor = &pipeline_specialization.vertex_buffer_descriptor;
 
-        // the vertex buffer descriptor that will be used for this pipeline
-        let mut compiled_vertex_buffer_descriptor = VertexBufferDescriptor {
-            step_mode: InputStepMode::Vertex,
-            stride: mesh_vertex_buffer_descriptor.stride,
-            ..Default::default()
-        };
-
-        for shader_vertex_attribute in pipeline_layout.vertex_buffer_descriptors.iter() {
-            let shader_vertex_attribute = shader_vertex_attribute
-                .attributes
-                .get(0)
-                .expect("Reflected layout has no attributes.");
-
-            if let Some(target_vertex_attribute) = mesh_vertex_buffer_descriptor
-                .attributes
-                .iter()
-                .find(|x| x.name == shader_vertex_attribute.name)
-            {
-                // copy shader location from reflected layout
-                let mut compiled_vertex_attribute = target_vertex_attribute.clone();
-                compiled_vertex_attribute.shader_location = shader_vertex_attribute.shader_location;
-                compiled_vertex_buffer_descriptor
-                    .attributes
-                    .push(compiled_vertex_attribute);
-            } else {
-                panic!(
-                    "Attribute {} is required by shader, but not supplied by mesh. Either remove the attribute from the shader or supply the attribute ({}) to the mesh.",
-                    shader_vertex_attribute.name,
-                    shader_vertex_attribute.name,
-                );
-            }
-        }
-
-        //TODO: add other buffers (like instancing) here
+        // Here we'd actually have multiple vertex buffers in the specialization and we wouldn't
+        // call this a "mesh vertex buffer descriptor"., but rather a list of them.
+        // then below in the loop we can flatten the pipeline_layout into 1 buffer descriptor
+        // per specialization buffer descriptor.
+        let mesh_vertex_buffer_descriptors = &pipeline_specialization.vertex_buffer_descriptors;
         let mut vertex_buffer_descriptors = Vec::<VertexBufferDescriptor>::default();
-        vertex_buffer_descriptors.push(compiled_vertex_buffer_descriptor);
+
+        for mesh_vertex_buffer_descriptor in mesh_vertex_buffer_descriptors {
+            // the vertex buffer descriptor that will be used for this pipeline
+            let mut compiled_vertex_buffer_descriptor = VertexBufferDescriptor {
+                step_mode: InputStepMode::Vertex,
+                stride: mesh_vertex_buffer_descriptor.stride,
+                ..Default::default()
+            };
+
+            // This actually flattens the "reflected layout" which is in 1 vertex buffer descriptor per
+            // shader vertex attribute and we flatten it down into 1 "compiled_vertex_buffer_descriptor"
+
+            // If we ever want to put the undefined mesh attributes with a fallback buffer then here
+            // we need to exclude the attributes that are not in mesh_vertex_buffer_descriptor from the
+            // compiled_vertex_buffer_descriptor and put those attributes into a separate vertex buffer
+            // descriptor.
+            for shader_vertex_attribute in pipeline_layout.vertex_buffer_descriptors.iter() {
+                let shader_vertex_attribute = shader_vertex_attribute
+                    .attributes
+                    .get(0)
+                    .expect("Reflected layout has no attributes.");
+
+                if let Some(target_vertex_attribute) = mesh_vertex_buffer_descriptor
+                    .attributes
+                    .iter()
+                    .find(|x| x.name == shader_vertex_attribute.name)
+                {
+                    // copy shader location from reflected layout
+                    let mut compiled_vertex_attribute = target_vertex_attribute.clone();
+                    compiled_vertex_attribute.shader_location =
+                        shader_vertex_attribute.shader_location;
+                    compiled_vertex_buffer_descriptor
+                        .attributes
+                        .push(compiled_vertex_attribute);
+                } else {
+                    // panic!(
+                    //     "Attribute {} is required by shader, but not supplied by mesh. Either remove the attribute from the shader or supply the attribute ({}) to the mesh.",
+                    //     shader_vertex_attribute.name,
+                    //     shader_vertex_attribute.name,
+                    // );
+                }
+            }
+
+            //TODO: add other buffers (like instancing) here
+
+            // These "compiled_vertex_buffer_descriptor" attributes came from parsing the shaders themselves.
+            // We add this as 1 single vertex buffer descriptor ohnto the pipeline_layout.vertex_buffer_descriptors.
+            // Looks like it gets FLATTENED here into 1.
+            vertex_buffer_descriptors.push(compiled_vertex_buffer_descriptor);
+        }
 
         pipeline_layout.vertex_buffer_descriptors = vertex_buffer_descriptors;
         specialized_descriptor.sample_count = pipeline_specialization.sample_count;

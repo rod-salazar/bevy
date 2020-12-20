@@ -64,7 +64,11 @@ pub fn shader_defs_system<T>(mut query: Query<(&T, &mut RenderPipelines)>)
 where
     T: ShaderDefs + Send + Sync + 'static,
 {
+    // For every RenderPipelines on the same entity as a T component (StandardMaterial, ColorMaterial, and more),
+    // we go ahead and attach a shader specialization onto each of them.
     for (shader_defs, mut render_pipelines) in query.iter_mut() {
+        // iter_shader_defs here is the same as "Get all the fields that are not None and attributed with "shader_defs"
+        //, and the names are transformed into a special format (captials with underscores). Smart!
         for shader_def in shader_defs.iter_shader_defs() {
             for render_pipeline in render_pipelines.pipelines.iter_mut() {
                 render_pipeline
