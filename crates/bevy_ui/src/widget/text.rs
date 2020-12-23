@@ -149,7 +149,7 @@ pub fn draw_text_system(
     mut query: Query<(Entity, &mut Draw, &Visible, &Text, &Node, &GlobalTransform)>,
 ) {
     let font_quad = meshes.get(&QUAD_HANDLE).unwrap();
-    let vertex_buffer_descriptor = font_quad.get_vertex_buffer_descriptor();
+    let vertex_buffer_descriptors = font_quad.get_vertex_buffer_descriptors();
 
     for (entity, mut draw, visible, text, node, global_transform) in query.iter_mut() {
         if !visible.is_visible {
@@ -164,7 +164,7 @@ pub fn draw_text_system(
                 position,
                 msaa: &msaa,
                 text_glyphs: &text_glyphs.glyphs,
-                font_quad_vertex_descriptor: &vertex_buffer_descriptor,
+                font_quad_vertex_descriptors: &vertex_buffer_descriptors,
                 style: &text.style,
             };
 

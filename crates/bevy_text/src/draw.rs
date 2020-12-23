@@ -51,7 +51,7 @@ pub struct DrawableText<'a> {
     pub style: &'a TextStyle,
     pub text_glyphs: &'a Vec<PositionedGlyph>,
     pub msaa: &'a Msaa,
-    pub font_quad_vertex_descriptor: &'a VertexBufferDescriptor,
+    pub font_quad_vertex_descriptors: &'a Vec<VertexBufferDescriptor>,
 }
 
 impl<'a> Drawable for DrawableText<'a> {
@@ -61,7 +61,7 @@ impl<'a> Drawable for DrawableText<'a> {
             &bevy_sprite::SPRITE_SHEET_PIPELINE_HANDLE.typed(),
             &PipelineSpecialization {
                 sample_count: self.msaa.samples,
-                vertex_buffer_descriptors: vec![self.font_quad_vertex_descriptor.clone()],
+                vertex_buffer_descriptors: self.font_quad_vertex_descriptors.clone(), // cloning a vec now is correct?
                 ..Default::default()
             },
         )?;

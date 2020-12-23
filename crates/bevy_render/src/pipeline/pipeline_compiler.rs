@@ -221,7 +221,9 @@ impl PipelineCompiler {
         let mesh_vertex_buffer_descriptors = &pipeline_specialization.vertex_buffer_descriptors;
         let mut vertex_buffer_descriptors = Vec::<VertexBufferDescriptor>::default();
 
+        println!("mesh_vertex_buffer_descriptor 1");
         for mesh_vertex_buffer_descriptor in mesh_vertex_buffer_descriptors {
+            println!("mesh_vertex_buffer_descriptor 2");
             // the vertex buffer descriptor that will be used for this pipeline
             let mut compiled_vertex_buffer_descriptor = VertexBufferDescriptor {
                 step_mode: InputStepMode::Vertex,
@@ -242,6 +244,16 @@ impl PipelineCompiler {
                     .get(0)
                     .expect("Reflected layout has no attributes.");
 
+                println!(
+                    "for shader_vertex_attribute: {}",
+                    shader_vertex_attribute.name
+                );
+
+                mesh_vertex_buffer_descriptor
+                    .attributes
+                    .iter()
+                    .for_each(|x| println!("x: {}", x.name));
+
                 if let Some(target_vertex_attribute) = mesh_vertex_buffer_descriptor
                     .attributes
                     .iter()
@@ -249,6 +261,10 @@ impl PipelineCompiler {
                 {
                     // copy shader location from reflected layout
                     let mut compiled_vertex_attribute = target_vertex_attribute.clone();
+                    println!(
+                        "Shader location: {} ",
+                        shader_vertex_attribute.shader_location
+                    );
                     compiled_vertex_attribute.shader_location =
                         shader_vertex_attribute.shader_location;
                     compiled_vertex_buffer_descriptor
@@ -271,6 +287,10 @@ impl PipelineCompiler {
             vertex_buffer_descriptors.push(compiled_vertex_buffer_descriptor);
         }
 
+        println!(
+            "pipeline layout v buf desc size: {}",
+            vertex_buffer_descriptors.len()
+        );
         pipeline_layout.vertex_buffer_descriptors = vertex_buffer_descriptors;
         specialized_descriptor.sample_count = pipeline_specialization.sample_count;
         specialized_descriptor.primitive_topology = pipeline_specialization.primitive_topology;

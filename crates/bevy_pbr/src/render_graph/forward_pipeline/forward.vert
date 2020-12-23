@@ -20,5 +20,10 @@ void main() {
     v_Normal = mat3(Model) * Vertex_Normal;
     v_Position = (Model * vec4(Vertex_Position, 1.0)).xyz;
     v_Uv = Vertex_Uv;
-    gl_Position = ViewProj * vec4(v_Position, 1.0);
+
+    if (Vertex_Uv.x > 0.01 || Vertex_Uv.y > 0.01) {
+        gl_Position = vec4(0.0,0.0,0.0,0.0);
+    } else {
+        gl_Position = ViewProj * vec4(v_Position, 1.0);
+    }
 }

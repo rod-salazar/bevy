@@ -16,8 +16,10 @@ use bevy_utils::{HashMap, HashSet};
 
 pub const INDEX_BUFFER_ASSET_INDEX: u64 = 0;
 pub const VERTEX_ATTRIBUTE_BUFFER_ID: u64 = 10;
-// How can I generalize this so that we can have an arbitrary number of these
-pub const FALLBACK_ATTRIBUTE_BUFFER_ID: u64 = 20;
+// How can I generalize this so that we can have an arbitrary number of these.
+// Or better, how can I share just 1 fallback among different sizes?
+pub const FALLBACK_ATTRIBUTE_BUFFER_ID_1: u64 = 20;
+pub const FALLBACK_ATTRIBUTE_BUFFER_ID_2: u64 = 30;
 
 #[derive(Clone, Debug)]
 pub enum VertexAttributeValues {
@@ -193,6 +195,11 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    // const ATTRIBUTES: &'static [&'static str; 3] = &[
+    //     Mesh::ATTRIBUTE_NORMAL,
+    //     Mesh::ATTRIBUTE_POSITION,
+    //     Mesh::ATTRIBUTE_UV_0,
+    // ];
     pub const ATTRIBUTE_NORMAL: &'static str = "Vertex_Normal";
     pub const ATTRIBUTE_POSITION: &'static str = "Vertex_Position";
     pub const ATTRIBUTE_UV_0: &'static str = "Vertex_Uv";
@@ -237,7 +244,9 @@ impl Mesh {
         })
     }
 
-    pub fn get_vertex_buffer_descriptor(&self) -> VertexBufferDescriptor {
+    pub fn get_vertex_buffer_descriptors(&self) -> Vec<VertexBufferDescriptor> {
+        let mut descriptors = Vec::new();
+
         let mut attributes = Vec::new();
         let mut accumulated_offset = 0;
         for (attribute_name, attribute_values) in self.attributes.iter() {
@@ -251,11 +260,49 @@ impl Mesh {
             accumulated_offset += vertex_format.get_size();
         }
 
-        VertexBufferDescriptor {
+        descriptors.push(VertexBufferDescriptor {
             name: Default::default(),
             stride: accumulated_offset,
             step_mode: InputStepMode::Vertex,
             attributes,
+        });
+
+        self.append_descriptors_for_undefined_attributes(&mut descriptors);
+
+        descriptors
+    }
+
+    fn append_descriptors_for_undefined_attributes(
+        &self,
+        descriptors: &mut Vec<VertexBufferDescriptor>,
+    ) {
+        if !self.attributes.contains_key(Mesh::ATTRIBUTE_NORMAL) {
+            descriptors.push(VertexBufferDescriptor {
+                name: Default::default(), // Can we actually name this one?
+                stride: 0,                // It's a trick
+                step_mode: InputStepMode::Vertex,
+                attributes: vec![VertexAttributeDescriptor {
+                    name: Cow::from(Mesh::ATTRIBUTE_NORMAL), // Cow... how to re-use
+                    offset: 0,
+                    format: VertexFormat::Float3,
+                    shader_location: 0, // why 0?
+                }],
+            });
+        }
+
+        if !self.attributes.contains_key(Mesh::ATTRIBUTE_UV_0) {
+            println!("Pushing vertex buf descriptor for uv_0");
+            descriptors.push(VertexBufferDescriptor {
+                name: Default::default(), // Can we actually name this one?
+                stride: 0,                // It's a trick
+                step_mode: InputStepMode::Vertex,
+                attributes: vec![VertexAttributeDescriptor {
+                    name: Cow::from(Mesh::ATTRIBUTE_UV_0), // Cow...
+                    offset: 0,
+                    format: VertexFormat::Float2,
+                    shader_location: 0, // why 0?
+                }],
+            });
         }
     }
 
@@ -293,7 +340,7 @@ impl Mesh {
         // The extra fallback byte is for missing attributes
         let mut attributes_interleaved_buffer = vec![0; vertex_count * vertex_size];
 
-        // bundle into interleaved buffers
+        // bundle into interleaved buffers.
         let mut attribute_offset = 0;
         for attribute_values in self.attributes.values() {
             let vertex_format = VertexFormat::from(attribute_values);
@@ -335,6 +382,17 @@ fn remove_current_mesh_resources(
     // free the fallback ones
     remove_resource_save(render_resource_context, handle, VERTEX_ATTRIBUTE_BUFFER_ID);
     remove_resource_save(render_resource_context, handle, INDEX_BUFFER_ASSET_INDEX);
+    remove_resource_save(
+        render_resource_context,
+        handle,
+        FALLBACK_ATTRIBUTE_BUFFER_ID_1,
+    );
+    remove_resource_save(
+        render_resource_context,
+        handle,
+        FALLBACK_ATTRIBUTE_BUFFER_ID_2,
+    );
+    // rod, check that this^ code gets executed and test what happens if we do not have a fallback
 }
 
 #[derive(Default)]
@@ -358,7 +416,7 @@ pub fn mesh_resource_provider_system(
         Query<(Entity, &Handle<Mesh>, &mut RenderPipelines), Changed<Handle<Mesh>>>,
     )>,
 ) {
-    let mut changed_meshes = HashSet::default();
+    let mut changed_meshes: HashSet<Handle<Mesh>> = HashSet::default();
     let render_resource_context = &**render_resource_context;
     for event in state.mesh_event_reader.iter(&mesh_events) {
         match event {
@@ -377,8 +435,6 @@ pub fn mesh_resource_provider_system(
             }
         }
     }
-
-    println!("mesh system");
 
     // update changed mesh data
     for changed_mesh_handle in changed_meshes.iter() {
@@ -419,22 +475,11 @@ pub fn mesh_resource_provider_system(
 
             // this needs to be for every missing attribute ... also consider doing it only once
             // for all missing attributes
-            if !mesh.attributes.contains_key(Mesh::ATTRIBUTE_UV_0) {
-                let fallback_buffer = vec![0; VertexFormat::Float2.get_size() as usize];
-
-                // This needs to be freed
-                render_resource_context.set_asset_resource(
-                    changed_mesh_handle,
-                    RenderResourceId::Buffer(render_resource_context.create_buffer_with_data(
-                        BufferInfo {
-                            buffer_usage: BufferUsage::VERTEX,
-                            ..Default::default()
-                        },
-                        &fallback_buffer,
-                    )),
-                    FALLBACK_ATTRIBUTE_BUFFER_ID,
-                );
-            }
+            set_render_resources_for_undefined_attributes(
+                mesh,
+                changed_mesh_handle,
+                render_resource_context,
+            );
 
             if let Some(mesh_entities) = state.mesh_entities.get_mut(changed_mesh_handle) {
                 for entity in mesh_entities.entities.iter() {
@@ -464,6 +509,53 @@ pub fn mesh_resource_provider_system(
     }
 }
 
+fn set_render_resources_for_undefined_attributes(
+    mesh: &Mesh,
+    mesh_handle: &Handle<Mesh>,
+    render_resource_context: &dyn RenderResourceContext,
+) {
+    if !mesh.attributes.contains_key(Mesh::ATTRIBUTE_NORMAL) {
+        set_fallback_resource(
+            mesh_handle,
+            render_resource_context,
+            FALLBACK_ATTRIBUTE_BUFFER_ID_1, // need multiple of these ids
+            VertexFormat::Float3,
+        );
+    }
+
+    if !mesh.attributes.contains_key(Mesh::ATTRIBUTE_UV_0) {
+        set_fallback_resource(
+            mesh_handle,
+            render_resource_context,
+            FALLBACK_ATTRIBUTE_BUFFER_ID_2, // need multiple of these ids
+            VertexFormat::Float2,
+        );
+    }
+}
+
+fn set_fallback_resource(
+    mesh_handle: &Handle<Mesh>,
+    render_resource_context: &dyn RenderResourceContext,
+    index: u64,
+    vertex_format: VertexFormat,
+) {
+    // document about stride 0 and why
+    let fallback_buffer = vec![0; vertex_format.get_size() as usize];
+
+    // This needs to be freed
+    render_resource_context.set_asset_resource(
+        mesh_handle,
+        RenderResourceId::Buffer(render_resource_context.create_buffer_with_data(
+            BufferInfo {
+                buffer_usage: BufferUsage::VERTEX,
+                ..Default::default()
+            },
+            &fallback_buffer,
+        )),
+        index,
+    );
+}
+
 fn update_entity_mesh(
     render_resource_context: &dyn RenderResourceContext,
     mesh: &Mesh,
@@ -473,28 +565,7 @@ fn update_entity_mesh(
     for render_pipeline in render_pipelines.pipelines.iter_mut() {
         render_pipeline.specialization.primitive_topology = mesh.primitive_topology;
         // TODO: don't allocate a new vertex buffer descriptor for every entity
-        let mut descriptors = vec![mesh.get_vertex_buffer_descriptor()];
-
-        // place this code somewhere more generic...
-        if !mesh.attributes.contains_key(Mesh::ATTRIBUTE_UV_0) {
-            // Should we be doing this for other attributes too?
-            let mut attributes = Vec::new();
-            attributes.push(VertexAttributeDescriptor {
-                name: Default::default(), // name it
-                offset: 0,
-                format: VertexFormat::Float2, // different for other attributes, like normals
-                shader_location: 0,           // why 0?
-            });
-
-            let desc = VertexBufferDescriptor {
-                name: Default::default(), // Can we actually name this one?
-                stride: 0,                // It's a trick
-                step_mode: InputStepMode::Vertex,
-                attributes,
-            };
-
-            descriptors.push(desc);
-        }
+        let descriptors = mesh.get_vertex_buffer_descriptors();
 
         render_pipeline.specialization.vertex_buffer_descriptors = descriptors;
 
@@ -513,19 +584,30 @@ fn update_entity_mesh(
             .set_index_buffer(index_buffer_resource);
     }
 
+    // Consider a design where we don't have "Vertex and fallback", but instead have a list
+    // of just "vertex buffers". Mentioning fallback as a special case typically sounds bad.
+    let mut resources = vec![];
     if let Some(RenderResourceId::Buffer(vertex_attribute_buffer_resource)) =
         render_resource_context.get_asset_resource(handle, VERTEX_ATTRIBUTE_BUFFER_ID)
     {
         // rod, this does a clone of bufferid, anyway to move owner? look up definition of 'move'
-        let mut resources = vec![vertex_attribute_buffer_resource];
-
-        if let Some(RenderResourceId::Buffer(fallback_vertex_attribute_buffer_resource)) =
-            render_resource_context.get_asset_resource(handle, FALLBACK_ATTRIBUTE_BUFFER_ID)
-        {
-            resources.push(fallback_vertex_attribute_buffer_resource);
-        }
-
-        // set vertex buffer into binding
-        render_pipelines.bindings.vertex_attribute_buffers = resources;
+        resources.push(vertex_attribute_buffer_resource);
     }
+
+    // If we end up having multiple undefined attributes can we end up using 1 fallback buffer? :O
+    if let Some(RenderResourceId::Buffer(fallback_vertex_attribute_buffer_resource)) =
+        render_resource_context.get_asset_resource(handle, FALLBACK_ATTRIBUTE_BUFFER_ID_1)
+    {
+        println!("Pushing fallback buffer 1");
+        resources.push(fallback_vertex_attribute_buffer_resource);
+    }
+    if let Some(RenderResourceId::Buffer(fallback_vertex_attribute_buffer_resource)) =
+        render_resource_context.get_asset_resource(handle, FALLBACK_ATTRIBUTE_BUFFER_ID_2)
+    {
+        println!("Pushing fallback buffer 2");
+
+        resources.push(fallback_vertex_attribute_buffer_resource);
+    }
+
+    render_pipelines.bindings.vertex_attribute_buffers = resources;
 }
